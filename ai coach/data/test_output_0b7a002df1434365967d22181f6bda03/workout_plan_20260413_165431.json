@@ -1,0 +1,20 @@
+{
+  "workout_plan": {
+    "rounds": 1,
+    "rest_between_rounds": 5,
+    "exercises": [
+      {
+        "exercise": "push_up",
+        "avg_set_time": 1,
+        "total_sets": 2,
+        "rest_seconds": 1
+      },
+      {
+        "exercise": "bodyweight_squat",
+        "avg_set_time": 1,
+        "total_sets": 2,
+        "rest_seconds": 1
+      }
+    ]
+  }
+}

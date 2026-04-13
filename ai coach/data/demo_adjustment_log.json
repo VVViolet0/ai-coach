@@ -1,0 +1,185 @@
+{
+  "summary": {
+    "is_active": false,
+    "end_reason": "user_requested_stop",
+    "current_round": 0,
+    "current_exercise": 0,
+    "current_set": 1,
+    "phase": "active_set"
+  },
+  "initial_workout_plan": {
+    "rounds": 2,
+    "rest_between_rounds": 15,
+    "exercises": [
+      {
+        "exercise_name": "push_up",
+        "display_name": "Push Up",
+        "instructions": [
+          "Place hands slightly wider than shoulders",
+          "Keep body straight",
+          "Lower chest toward the floor",
+          "Push back up"
+        ],
+        "demo_speed": 1.0,
+        "avg_set_time": 10,
+        "total_sets": 3,
+        "rest_seconds": 10
+      },
+      {
+        "exercise_name": "bodyweight_squat",
+        "display_name": "Bodyweight Squat",
+        "instructions": [
+          "Stand with feet shoulder-width apart",
+          "Push hips back",
+          "Lower until thighs parallel",
+          "Drive through heels to stand"
+        ],
+        "demo_speed": 1.0,
+        "avg_set_time": 10,
+        "total_sets": 3,
+        "rest_seconds": 10
+      }
+    ]
+  },
+  "final_workout_plan": {
+    "rounds": 2,
+    "rest_between_rounds": 15,
+    "exercises": [
+      {
+        "exercise_name": "push_up",
+        "display_name": "Push Up",
+        "instructions": [
+          "Place hands slightly wider than shoulders",
+          "Keep body straight",
+          "Lower chest toward the floor",
+          "Push back up"
+        ],
+        "demo_speed": 1.0,
+        "avg_set_time": 10,
+        "total_sets": 2,
+        "rest_seconds": 12
+      },
+      {
+        "exercise_name": "bodyweight_squat",
+        "display_name": "Bodyweight Squat",
+        "instructions": [
+          "Stand with feet shoulder-width apart",
+          "Push hips back",
+          "Lower until thighs parallel",
+          "Drive through heels to stand"
+        ],
+        "demo_speed": 1.0,
+        "avg_set_time": 10,
+        "total_sets": 2,
+        "rest_seconds": 12
+      }
+    ]
+  },
+  "adjustments": [
+    {
+      "action_type": "adjust_intensity",
+      "set_delta": -1,
+      "rest_multiplier": 1.2,
+      "tempo_cue": "slower",
+      "reason": "fatigue_downshift",
+      "exercise_changes": [
+        {
+          "exercise_index": 0,
+          "exercise_name": "push_up",
+          "before": {
+            "total_sets": 3,
+            "rest_seconds": 10
+          },
+          "after": {
+            "total_sets": 2,
+            "rest_seconds": 12
+          }
+        },
+        {
+          "exercise_index": 1,
+          "exercise_name": "bodyweight_squat",
+          "before": {
+            "total_sets": 3,
+            "rest_seconds": 10
+          },
+          "after": {
+            "total_sets": 2,
+            "rest_seconds": 12
+          }
+        }
+      ]
+    }
+  ],
+  "conversation": [
+    {
+      "role": "user",
+      "content": "too hard"
+    },
+    {
+      "role": "coach",
+      "content": "Understood. I lowered upcoming intensity and added more recovery."
+    },
+    {
+      "role": "user",
+      "content": "stop"
+    },
+    {
+      "role": "coach",
+      "content": "Stopping the session now."
+    }
+  ],
+  "events": [
+    {
+      "type": "session_start",
+      "detail": {
+        "timestamp": 1775919336.8679345
+      }
+    },
+    {
+      "type": "user_message",
+      "detail": {
+        "content": "too hard"
+      }
+    },
+    {
+      "type": "decision",
+      "detail": {
+        "intent": "fatigue"
+      }
+    },
+    {
+      "type": "adjustment_applied",
+      "detail": {
+        "set_delta": -1,
+        "rest_multiplier": 1.2,
+        "tempo_cue": "slower",
+        "phase": "active_set"
+      }
+    },
+    {
+      "type": "user_message",
+      "detail": {
+        "content": "stop"
+      }
+    },
+    {
+      "type": "decision",
+      "detail": {
+        "intent": "stop"
+      }
+    },
+    {
+      "type": "session_stop",
+      "detail": {
+        "reason": "user_requested_stop"
+      }
+    },
+    {
+      "type": "session_end",
+      "detail": {
+        "timestamp": 1775919337.8690598,
+        "reason": "user_requested_stop"
+      }
+    }
+  ]
+}

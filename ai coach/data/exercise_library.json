@@ -1,0 +1,62 @@
+[
+ {
+  "name": "push_up",
+  "target_muscles": ["chest", "triceps", "shoulders", "arms"],
+  "equipment": "none",
+  "avg_set_time": 40
+ },
+ {
+  "name": "bodyweight_squat",
+  "target_muscles": ["quadriceps", "glutes"],
+  "equipment": "none",
+  "avg_set_time": 40
+ },
+ {
+  "name": "lunges",
+  "target_muscles": ["quadriceps", "glutes"],
+  "equipment": "none",
+  "avg_set_time": 20
+ },
+ {
+  "name": "plank",
+  "target_muscles": ["core"],
+  "equipment": "none",
+  "avg_set_time": 40
+ },
+ {
+  "name": "glute_bridge",
+  "target_muscles": ["glutes"],
+  "equipment": "none",
+  "avg_set_time": 20
+ },
+ {
+  "name": "mountain_climber",
+  "target_muscles": ["core", "legs"],
+  "equipment": "none",
+  "avg_set_time": 20
+ },
+ {
+  "name": "jumping_jacks",
+  "target_muscles": ["full_body"],
+  "equipment": "none",
+  "avg_set_time": 20
+ },
+ {
+  "name": "sit_up",
+  "target_muscles": ["core"],
+  "equipment": "none",
+  "avg_set_time": 20
+ },
+ {
+  "name": "wall_sit",
+  "target_muscles": ["quadriceps"],
+  "equipment": "none",
+  "avg_set_time": 30
+ },
+ {
+  "name": "high_knees",
+  "target_muscles": ["legs"],
+  "equipment": "none",
+  "avg_set_time": 30
+ }
+]

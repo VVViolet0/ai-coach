@@ -1,0 +1,122 @@
+{
+  "summary": {
+    "is_active": false,
+    "end_reason": "user_requested_stop",
+    "current_round": 0,
+    "current_exercise": 0,
+    "current_set": 1,
+    "phase": "active_set"
+  },
+  "initial_workout_plan": {
+    "rounds": 2,
+    "rest_between_rounds": 15,
+    "exercises": [
+      {
+        "exercise_name": "push_up",
+        "display_name": "Push Up",
+        "instructions": [
+          "Place hands slightly wider than shoulders",
+          "Keep body straight",
+          "Lower chest toward the floor",
+          "Push back up"
+        ],
+        "demo_speed": 1.0,
+        "avg_set_time": 10,
+        "total_sets": 3,
+        "rest_seconds": 10
+      },
+      {
+        "exercise_name": "bodyweight_squat",
+        "display_name": "Bodyweight Squat",
+        "instructions": [
+          "Stand with feet shoulder-width apart",
+          "Push hips back",
+          "Lower until thighs parallel",
+          "Drive through heels to stand"
+        ],
+        "demo_speed": 1.0,
+        "avg_set_time": 10,
+        "total_sets": 3,
+        "rest_seconds": 10
+      }
+    ]
+  },
+  "final_workout_plan": {
+    "rounds": 2,
+    "rest_between_rounds": 15,
+    "exercises": [
+      {
+        "exercise_name": "push_up",
+        "display_name": "Push Up",
+        "instructions": [
+          "Place hands slightly wider than shoulders",
+          "Keep body straight",
+          "Lower chest toward the floor",
+          "Push back up"
+        ],
+        "demo_speed": 1.0,
+        "avg_set_time": 10,
+        "total_sets": 3,
+        "rest_seconds": 10
+      },
+      {
+        "exercise_name": "bodyweight_squat",
+        "display_name": "Bodyweight Squat",
+        "instructions": [
+          "Stand with feet shoulder-width apart",
+          "Push hips back",
+          "Lower until thighs parallel",
+          "Drive through heels to stand"
+        ],
+        "demo_speed": 1.0,
+        "avg_set_time": 10,
+        "total_sets": 3,
+        "rest_seconds": 10
+      }
+    ]
+  },
+  "adjustments": [],
+  "conversation": [
+    {
+      "role": "user",
+      "content": "stop"
+    },
+    {
+      "role": "coach",
+      "content": "Stopping the session now."
+    }
+  ],
+  "events": [
+    {
+      "type": "session_start",
+      "detail": {
+        "timestamp": 1775919317.2298265
+      }
+    },
+    {
+      "type": "user_message",
+      "detail": {
+        "content": "stop"
+      }
+    },
+    {
+      "type": "decision",
+      "detail": {
+        "intent": "stop"
+      }
+    },
+    {
+      "type": "session_stop",
+      "detail": {
+        "reason": "user_requested_stop"
+      }
+    },
+    {
+      "type": "session_end",
+      "detail": {
+        "timestamp": 1775919318.2780242,
+        "reason": "user_requested_stop"
+      }
+    }
+  ]
+}

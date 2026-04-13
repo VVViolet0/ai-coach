@@ -1,0 +1,13 @@
+{
+  "session_goal": "general_fitness",
+  "target_muscles": [
+    "full_body"
+  ],
+  "duration_minutes": 5,
+  "intensity_preference": "moderate",
+  "experience_level": "beginner",
+  "equipment_available": [
+    "none"
+  ],
+  "avoid_body_parts": []
+}
