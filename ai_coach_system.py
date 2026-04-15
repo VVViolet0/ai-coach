@@ -1,11 +1,19 @@
 ﻿import argparse
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from intent_modeling import parse_user_intent
-from workout_executor import DecisionEngine, ExecutorIO, SessionState, Clock, run_adaptive_workout
+from workout_executor import (
+    DecisionEngine,
+    ExecutorIO,
+    SessionState,
+    Clock,
+    FeedbackUnderstander,
+    run_adaptive_workout,
+)
 from workout_planner import generate_workout_plan, load_exercise_library
 
 
@@ -37,6 +45,32 @@ class AICoachSystem:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         return str(target)
 
+    def _emit_message(self, message: str, io: Optional[ExecutorIO]) -> None:
+        if io:
+            io.send(message)
+        else:
+            print(message)
+
+    def _summarize_workout_plan(self, plan: Dict[str, Any], intent: Dict[str, Any]) -> str:
+        plan_obj = plan["workout_plan"]
+        lines = [
+            "[Coach] 训练计划已生成，开练前概览：",
+            (
+                f"- 目标: {intent.get('session_goal', 'general_fitness')} | "
+                f"时长: {intent.get('duration_minutes', 30)} 分钟"
+            ),
+            (
+                f"- 轮数: {plan_obj.get('rounds', 1)} | "
+                f"轮间休息: {plan_obj.get('rest_between_rounds', 0)} 秒"
+            ),
+            "- 动作安排:",
+        ]
+        for ex in plan_obj.get("exercises", []):
+            lines.append(
+                f"  - {ex.get('exercise')} | sets={ex.get('total_sets')} | rest={ex.get('rest_seconds')}s"
+            )
+        return "\n".join(lines)
+
     def run_session(
         self,
         user_request: str,
@@ -46,6 +80,8 @@ class AICoachSystem:
         io: Optional[ExecutorIO] = None,
         clock: Optional[Clock] = None,
         decision_engine: Optional[DecisionEngine] = None,
+        feedback_understander: Optional[FeedbackUnderstander] = None,
+        feedback_model: str = "frob/qwen3.5-instruct:4b",
         execute_workout: bool = True,
     ) -> Dict[str, Any]:
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -54,6 +90,9 @@ class AICoachSystem:
         intent_file = intent_output_path or str(self.output_dir / f"intent_{now}.json")
         self.save_json(intent, intent_file)
 
+        library = load_exercise_library(self.exercise_library_path)
+        if execute_workout:
+            self._emit_message("[Coach] 正在为你生成训练计划，请稍等...", io)
         plan = self.build_workout_plan(intent)
         plan_file = plan_output_path or str(self.output_dir / f"workout_plan_{now}.json")
         self.save_json(plan, plan_file)
@@ -62,12 +101,21 @@ class AICoachSystem:
         session_end_reason = "skipped"
         effective_log_path: Optional[str] = None
         if execute_workout:
+            self._emit_message(self._summarize_workout_plan(plan, intent), io)
+            if clock:
+                clock.sleep(10)
+            else:
+                time.sleep(10)
             session_state: SessionState = run_adaptive_workout(
                 plan["workout_plan"],
                 io=io,
                 clock=clock,
                 decision_engine=decision_engine,
+                feedback_understander=feedback_understander,
+                feedback_model=feedback_model,
                 log_path=log_file,
+                initial_intent=intent,
+                exercise_library=library,
             )
             session_end_reason = session_state.end_reason
             effective_log_path = log_file
@@ -115,3 +163,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

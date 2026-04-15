@@ -1,0 +1,18 @@
+﻿.env
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+
+# Runtime outputs
+data/intent_*.json
+data/workout_plan_*.json
+data/session_log_*.json
+data/test_output_*/
+data/demo_*_log.json
+data/my_session_log.json
+data/intent_test_outputs.json
+
+# Keep only source exercise library in data/
+data/*.json
+!data/exercise_library.json
