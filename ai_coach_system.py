@@ -20,7 +20,7 @@ from workout_planner import generate_workout_plan, load_exercise_library
 class AICoachSystem:
     def __init__(
         self,
-        exercise_library_path: str = "data/exercise_library.json",
+        exercise_library_path: str = "libraries/exercise_library.json",
         output_dir: str = "data",
         intent_model: str = "frob/qwen3.5-instruct:4b",
         planner_model: str = "frob/qwen3.5-instruct:4b",
@@ -139,7 +139,7 @@ def _read_user_request(cli_request: Optional[str]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run complete AI Coach workflow (intent -> planning -> adaptive execution).")
     parser.add_argument("--request", help="User workout request text.")
-    parser.add_argument("--exercise-library", default="data/exercise_library.json", help="Exercise library JSON path.")
+    parser.add_argument("--exercise-library", default="libraries/exercise_library.json", help="Exercise library JSON path.")
     parser.add_argument("--output-dir", default="data", help="Directory for generated intent/plan/log files.")
     parser.add_argument("--intent-model", default="frob/qwen3.5-instruct:4b", help="Ollama model for intent modeling.")
     parser.add_argument("--planner-model", default="frob/qwen3.5-instruct:4b", help="Ollama model for workout planning.")

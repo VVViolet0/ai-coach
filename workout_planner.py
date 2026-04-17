@@ -68,7 +68,7 @@ def _chat_with_model(prompt: str, model: str, temperature: float) -> str:
         raise RuntimeError(f"ollama CLI error: {cli_exc}") from cli_exc
 
 
-def load_exercise_library(path: str = "data/exercise_library.json") -> List[Dict[str, Any]]:
+def load_exercise_library(path: str = "libraries/exercise_library.json") -> List[Dict[str, Any]]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 

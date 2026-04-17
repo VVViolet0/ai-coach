@@ -12,7 +12,4 @@ data/test_output_*/
 data/demo_*_log.json
 data/my_session_log.json
 data/intent_test_outputs.json
-
-# Keep only source exercise library in data/
-data/*.json
-!data/exercise_library.json
+data/*.tmp
