@@ -4,6 +4,7 @@ import threading
 import time
 from copy import deepcopy
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Protocol, Tuple, Union
 
 from feedback_understanding import (
@@ -11,30 +12,6 @@ from feedback_understanding import (
     FeedbackUnderstandingResult,
     understand_feedback,
 )
-
-
-EXERCISE_DB = {
-    "push_up": {
-        "exercise_name": "Push Up",
-        "instructions": [
-            "Place hands slightly wider than shoulders",
-            "Keep body straight",
-            "Lower chest toward the floor",
-            "Push back up",
-        ],
-        "demo_speed": 1.0,
-    },
-    "bodyweight_squat": {
-        "exercise_name": "Bodyweight Squat",
-        "instructions": [
-            "Stand with feet shoulder-width apart",
-            "Push hips back",
-            "Lower until thighs parallel",
-            "Drive through heels to stand",
-        ],
-        "demo_speed": 1.0,
-    },
-}
 
 MIN_REST_SECONDS = 5
 MAX_REST_SECONDS = 180
@@ -45,6 +22,9 @@ MIN_REST_MULTIPLIER = 0.5
 MAX_REST_MULTIPLIER = 2.0
 MIN_SET_DELTA = -3
 MAX_SET_DELTA = 3
+MIN_DEMO_SPEED = 0.75
+MAX_DEMO_SPEED = 1.25
+EXERCISE_DEMO_LIBRARY_PATH = Path('libraries/exercise_demo_library.json')
 YES_WORDS = {"yes", "y", "continue", "go", "ok", "okay"}
 NO_WORDS = {"no", "n", "stop", "quit", "end"}
 
@@ -136,6 +116,7 @@ class SessionState:
     rest_multiplier: float = 1.0
     set_delta: int = 0
     tempo_cue: str = "normal"
+    demo_speed: float = 1.0
     is_active: bool = True
     end_reason: str = "completed"
     awaiting_pain_confirmation: bool = False
@@ -189,7 +170,25 @@ class CLIExecutorIO:
         self._alive = False
 
 
+def load_exercise_demo_library(path: str | Path = EXERCISE_DEMO_LIBRARY_PATH) -> Dict[str, Dict]:
+    with open(path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError("Exercise demo library must be a JSON object keyed by exercise name.")
+    return payload
+
+
+def _resolve_demo_speed(tempo_cue: str) -> float:
+    speed_map = {
+        "normal": 1.0,
+        "slower": 0.9,
+        "faster": 1.1,
+    }
+    return speed_map.get(tempo_cue, 1.0)
+
+
 def translate_plan_for_demo(workout_plan: Dict) -> Dict:
+    exercise_demo_library = load_exercise_demo_library()
     demo_plan = {
         "rounds": workout_plan["rounds"],
         "rest_between_rounds": workout_plan["rest_between_rounds"],
@@ -198,12 +197,11 @@ def translate_plan_for_demo(workout_plan: Dict) -> Dict:
 
     for ex in workout_plan["exercises"]:
         name = ex["exercise"]
-        details = EXERCISE_DB.get(
+        details = exercise_demo_library.get(
             name,
             {
                 "exercise_name": name.replace("_", " ").title(),
                 "instructions": ["Follow safe and controlled movement."],
-                "demo_speed": 1.0,
             },
         )
 
@@ -211,7 +209,6 @@ def translate_plan_for_demo(workout_plan: Dict) -> Dict:
             "exercise_name": name,
             "display_name": details["exercise_name"],
             "instructions": details["instructions"],
-            "demo_speed": details["demo_speed"],
             "avg_set_time": ex["avg_set_time"],
             "total_sets": ex["total_sets"],
             "rest_seconds": ex["rest_seconds"],
@@ -244,6 +241,10 @@ class RuleFirstDecisionEngine:
 
 
 def _clamp_int(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, value))
+
+
+def _clamp_float(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
@@ -483,36 +484,35 @@ def _apply_adjustment_action(
     io: ExecutorIO,
     source_intent: str = "",
     confidence: float = 0.0,
-) -> None:
+) -> Optional[str]:
     if action.action_type == "stop":
         state.is_active = False
         state.end_reason = action.reason or "user_stop"
         state.log_event("session_stop", {"reason": state.end_reason})
-        return
+        return None
 
     if action.action_type == "replace_exercise":
         target_name = action.replacement_exercise
         if not target_name:
-            return
+            return None
 
         replacement_def = next((ex for ex in state.exercise_library if ex.get("name") == target_name), None)
         if not replacement_def:
-            return
+            return None
 
         exercise = state.workout_plan["exercises"][state.current_exercise]
         before_name = exercise["exercise_name"]
-        details = EXERCISE_DB.get(
+        exercise_demo_library = load_exercise_demo_library()
+        details = exercise_demo_library.get(
             target_name,
             {
                 "exercise_name": target_name.replace("_", " ").title(),
                 "instructions": ["Follow safe and controlled movement."],
-                "demo_speed": 1.0,
             },
         )
         exercise["exercise_name"] = target_name
         exercise["display_name"] = details["exercise_name"]
         exercise["instructions"] = details["instructions"]
-        exercise["demo_speed"] = details["demo_speed"]
         exercise["avg_set_time"] = int(replacement_def.get("avg_set_time", exercise["avg_set_time"]))
 
         state.adjustment_log.append(
@@ -536,10 +536,10 @@ def _apply_adjustment_action(
             },
         )
         io.send(f"[Adjustment] replaced exercise: {before_name} -> {target_name}")
-        return
+        return f"I replaced the current exercise from {before_name} to {target_name}."
 
     if action.action_type != "adjust_intensity":
-        return
+        return None
 
     safe_set_delta = _clamp_int(action.set_delta, MIN_SET_DELTA, MAX_SET_DELTA)
     safe_multiplier = max(MIN_REST_MULTIPLIER, min(MAX_REST_MULTIPLIER, action.rest_multiplier))
@@ -550,6 +550,7 @@ def _apply_adjustment_action(
     )
     if action.tempo_cue:
         state.tempo_cue = action.tempo_cue
+    state.demo_speed = _clamp_float(_resolve_demo_speed(state.tempo_cue), MIN_DEMO_SPEED, MAX_DEMO_SPEED)
 
     exercise_changes = []
     for idx, exercise in enumerate(state.workout_plan["exercises"]):
@@ -602,6 +603,26 @@ def _apply_adjustment_action(
         f"[Adjustment] next blocks updated: set_delta={safe_set_delta}, "
         f"rest_multiplier={safe_multiplier:.2f}, tempo={state.tempo_cue}"
     )
+    changes: List[str] = []
+    if safe_set_delta < 0:
+        changes.append(f"reduced upcoming sets by {abs(safe_set_delta)}")
+    elif safe_set_delta > 0:
+        changes.append(f"increased upcoming sets by {safe_set_delta}")
+
+    if safe_multiplier > 1.0:
+        changes.append(f"increased upcoming rest by {int(round((safe_multiplier - 1.0) * 100))}%")
+    elif safe_multiplier < 1.0:
+        changes.append(f"reduced upcoming rest by {int(round((1.0 - safe_multiplier) * 100))}%")
+
+    if action.tempo_cue == "slower":
+        changes.append("slowed the demo pace")
+    elif action.tempo_cue == "faster":
+        changes.append("sped up the demo pace")
+
+    if not changes:
+        return "I kept the plan structure but refreshed the upcoming pacing settings."
+
+    return "I " + ", ".join(changes) + "."
 
 
 def _handle_user_message(
@@ -663,6 +684,7 @@ def _handle_user_message(
         "current_set": state.current_set,
         "user_condition": state.user_condition.snapshot(),
         "tempo_cue": state.tempo_cue,
+        "demo_speed": state.demo_speed,
         "set_delta": state.set_delta,
         "rest_multiplier": state.rest_multiplier,
     }
@@ -697,14 +719,22 @@ def _handle_user_message(
     if condition_changed and decision.intent not in {"stop", "pain", "neutral", "unknown", "pace_up", "pace_down"}:
         state_actions = _derive_state_actions(state)
 
+    coach_adjustment_summaries: List[str] = []
     for action in decision.actions + state_actions:
-        _apply_adjustment_action(
+        summary = _apply_adjustment_action(
             action,
             state,
             io,
             source_intent=understanding.intent,
             confidence=understanding.confidence,
         )
+        if summary:
+            coach_adjustment_summaries.append(summary)
+
+    if coach_adjustment_summaries:
+        combined_summary = " ".join(coach_adjustment_summaries)
+        io.send(f"[Coach] {combined_summary}")
+        state.conversation_log.append({"role": "coach", "content": combined_summary})
 
     if decision.requires_confirmation:
         if decision.confirmation_type == "pain":
@@ -794,7 +824,6 @@ def _run_pre_exercise_preview_wait(
 def _show_demo(io: ExecutorIO, exercise: Dict) -> None:
     io.send("---------------------------")
     io.send(f"Exercise: {exercise['display_name']}")
-    io.send(f"demo_speed: {exercise['demo_speed']}")
     io.send("Instructions:")
     for step in exercise["instructions"]:
         io.send(f" - {step}")
@@ -821,6 +850,8 @@ def export_session_log(state: SessionState, path: str) -> None:
             "current_exercise": state.current_exercise,
             "current_set": state.current_set,
             "phase": state.phase,
+            "tempo_cue": state.tempo_cue,
+            "demo_speed": state.demo_speed,
         },
         "initial_workout_plan": state.initial_workout_plan,
         "initial_intent": state.initial_intent,
@@ -863,6 +894,7 @@ def run_adaptive_workout(
         initial_workout_plan=deepcopy(translated_plan),
         initial_intent=deepcopy(initial_intent or {}),
         exercise_library=deepcopy(exercise_library or []),
+        demo_speed=_resolve_demo_speed("normal"),
     )
     state.log_event("session_start", {"timestamp": runtime_clock.now()})
     try:
@@ -877,6 +909,7 @@ def run_adaptive_workout(
                 if not state.is_active:
                     break
                 state.current_exercise = ex_idx
+                state.demo_speed = _clamp_float(_resolve_demo_speed(state.tempo_cue), MIN_DEMO_SPEED, MAX_DEMO_SPEED)
                 _show_demo(runtime_io, exercise)
                 _run_pre_exercise_preview_wait(
                     seconds=PRE_EXERCISE_PREVIEW_WAIT_SECONDS,
@@ -895,7 +928,7 @@ def run_adaptive_workout(
                     state.current_set = set_index + 1
                     runtime_io.send(
                         f"Set {state.current_set}/{exercise['total_sets']} start "
-                        f"(tempo: {state.tempo_cue})"
+                        f"(demo_speed: {state.demo_speed:.2f})"
                     )
                     _run_timed_phase(
                         seconds=exercise["avg_set_time"],
@@ -953,4 +986,5 @@ def run_adaptive_workout(
         runtime_io.close()
 
     return state
+
 

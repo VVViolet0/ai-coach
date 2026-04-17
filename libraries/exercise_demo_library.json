@@ -1,0 +1,137 @@
+{
+  "push_up": {
+    "exercise_name": "Push Up",
+    "instructions": [
+      "Place hands slightly wider than shoulders",
+      "Keep body straight",
+      "Lower chest toward the floor",
+      "Push back up"
+    ]
+  },
+  "lunges": {
+    "exercise_name": "Lunges",
+    "instructions": [
+      "Stand tall with feet hip-width apart",
+      "Step one leg forward",
+      "Lower both knees with control",
+      "Push through the front foot to return"
+    ]
+  },
+  "plank": {
+    "exercise_name": "Plank",
+    "instructions": [
+      "Place forearms on the floor",
+      "Keep shoulders stacked over elbows",
+      "Tighten core and squeeze glutes",
+      "Hold a straight line from head to heels"
+    ]
+  },
+  "glute_bridge": {
+    "exercise_name": "Glute Bridge",
+    "instructions": [
+      "Lie on your back with knees bent",
+      "Place feet flat on the floor",
+      "Drive hips upward by squeezing glutes",
+      "Lower slowly with control"
+    ]
+  },
+  "mountain_climber": {
+    "exercise_name": "Mountain Climber",
+    "instructions": [
+      "Start in a strong plank position",
+      "Drive one knee toward the chest",
+      "Switch legs quickly with control",
+      "Keep hips stable and core engaged"
+    ]
+  },
+  "jumping_jacks": {
+    "exercise_name": "Jumping Jacks",
+    "instructions": [
+      "Stand upright with feet together",
+      "Jump feet apart as arms rise overhead",
+      "Land softly with knees slightly bent",
+      "Return to the start rhythmically"
+    ]
+  },
+  "sit_up": {
+    "exercise_name": "Sit Up",
+    "instructions": [
+      "Lie on your back with knees bent",
+      "Brace your core before lifting",
+      "Curl the torso upward smoothly",
+      "Lower back down without dropping"
+    ]
+  },
+  "wall_sit": {
+    "exercise_name": "Wall Sit",
+    "instructions": [
+      "Stand with your back against the wall",
+      "Slide down until knees are near ninety degrees",
+      "Keep weight through the heels",
+      "Hold the position with steady breathing"
+    ]
+  },
+  "high_knees": {
+    "exercise_name": "High Knees",
+    "instructions": [
+      "Stand tall and lift one knee high",
+      "Alternate legs quickly",
+      "Pump arms naturally for rhythm",
+      "Stay light on the balls of your feet"
+    ]
+  },
+  "superman_hold": {
+    "exercise_name": "Superman Hold",
+    "instructions": [
+      "Lie face down with arms extended",
+      "Lift arms, chest, and legs slightly off the floor",
+      "Keep neck neutral and gaze downward",
+      "Hold the position with a tight back and core"
+    ]
+  },
+  "reverse_snow_angel": {
+    "exercise_name": "Reverse Snow Angel",
+    "instructions": [
+      "Lie face down with arms by your sides",
+      "Lift chest slightly off the floor",
+      "Sweep arms overhead in a wide arc",
+      "Return slowly while squeezing the upper back"
+    ]
+  },
+  "tricep_dips": {
+    "exercise_name": "Tricep Dips",
+    "instructions": [
+      "Place hands behind you on a stable surface",
+      "Slide hips forward off the edge",
+      "Bend elbows to lower with control",
+      "Press through palms to rise back up"
+    ]
+  },
+  "bird_dog": {
+    "exercise_name": "Bird Dog",
+    "instructions": [
+      "Start on hands and knees",
+      "Extend one arm and the opposite leg",
+      "Keep hips level and core tight",
+      "Return slowly and switch sides"
+    ]
+  },
+  "burpees": {
+    "exercise_name": "Burpees",
+    "instructions": [
+      "Start standing with feet under hips",
+      "Drop hands to the floor and jump feet back",
+      "Return feet under the body",
+      "Stand or jump up explosively"
+    ]
+  },
+  "bodyweight_squat": {
+    "exercise_name": "Bodyweight Squat",
+    "instructions": [
+      "Stand with feet shoulder-width apart",
+      "Push hips back",
+      "Lower until thighs parallel",
+      "Drive through heels to stand"
+    ]
+  }
+}

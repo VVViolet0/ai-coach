@@ -1,19 +1,19 @@
 [
  {
   "name": "push_up",
-  "target_muscles": ["chest", "triceps", "shoulders", "arms"],
+  "target_muscles": ["chest", "arms"],
   "equipment": "none",
   "avg_set_time": 40
  },
  {
   "name": "bodyweight_squat",
-  "target_muscles": ["quadriceps", "glutes"],
+  "target_muscles": ["legs"],
   "equipment": "none",
   "avg_set_time": 40
  },
  {
   "name": "lunges",
-  "target_muscles": ["quadriceps", "glutes"],
+  "target_muscles": ["legs"],
   "equipment": "none",
   "avg_set_time": 20
  },
@@ -25,7 +25,7 @@
  },
  {
   "name": "glute_bridge",
-  "target_muscles": ["glutes"],
+  "target_muscles": ["legs", "core"],
   "equipment": "none",
   "avg_set_time": 20
  },
@@ -49,13 +49,43 @@
  },
  {
   "name": "wall_sit",
-  "target_muscles": ["quadriceps"],
+  "target_muscles": ["legs"],
   "equipment": "none",
   "avg_set_time": 30
  },
  {
   "name": "high_knees",
-  "target_muscles": ["legs"],
+  "target_muscles": ["legs", "core"],
+  "equipment": "none",
+  "avg_set_time": 30
+ },
+ {
+  "name": "superman_hold",
+  "target_muscles": ["back", "core"],
+  "equipment": "none",
+  "avg_set_time": 30
+ },
+ {
+  "name": "reverse_snow_angel",
+  "target_muscles": ["back", "arms"],
+  "equipment": "none",
+  "avg_set_time": 30
+ },
+ {
+  "name": "tricep_dips",
+  "target_muscles": ["arms", "chest"],
+  "equipment": "none",
+  "avg_set_time": 30
+ },
+ {
+  "name": "bird_dog",
+  "target_muscles": ["core", "back"],
+  "equipment": "none",
+  "avg_set_time": 30
+ },
+ {
+  "name": "burpees",
+  "target_muscles": ["full_body"],
   "equipment": "none",
   "avg_set_time": 30
  }
