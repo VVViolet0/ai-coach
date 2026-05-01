@@ -151,6 +151,7 @@ Rules:
 2. target_muscles default ["full_body"]
 3. equipment default ["none"]
 4. avoid_body_parts default []
+5. The user request may come from Chinese speech recognition and may contain homophone or near-sound errors. Infer session_goal, target_muscles, and duration_minutes from the fitness context.
 
 User request:
 {user_text}

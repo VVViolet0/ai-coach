@@ -15,8 +15,6 @@ MAX_REST = 180
 MIN_SETS = 1
 MAX_SETS = 6
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-
-
 def _extract_json_block(text: str) -> str:
     if not text:
         raise ValueError("Empty response from model")
@@ -77,7 +75,6 @@ def filter_exercises(exercises: List[Dict[str, Any]], intent: Dict[str, Any]) ->
     available_equipment = set(intent.get("equipment_available", ["none"]))
     avoids = set(intent.get("avoid_body_parts", []))
     targets = set(intent.get("target_muscles", ["full_body"]))
-
     filtered: List[Dict[str, Any]] = []
     for ex in exercises:
         if ex.get("equipment") not in available_equipment:

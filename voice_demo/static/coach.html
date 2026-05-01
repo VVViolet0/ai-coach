@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voice AI Coach</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --ink: #17202a;
+        --muted: #627084;
+        --line: #d8dee8;
+        --accent: #0f766e;
+        --accent-soft: #e5f3f1;
+        --warn: #9a5b10;
+        --error: #b91c1c;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(1220px, calc(100vw - 32px));
+        margin: 24px auto;
+        display: grid;
+        gap: 14px;
+      }
+
+      header,
+      .panel,
+      .metric,
+      .exercise-item,
+      .record {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      header {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+        padding: 14px 16px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 24px;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 16px;
+        margin-bottom: 12px;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      button {
+        appearance: none;
+        border: 1px solid #115e59;
+        border-radius: 8px;
+        background: var(--accent);
+        color: white;
+        font: inherit;
+        font-weight: 700;
+        min-height: 38px;
+        padding: 0 14px;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        background: white;
+        color: #115e59;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .top-grid {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .metric {
+        padding: 12px;
+      }
+
+      .metric-label {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+
+      .metric-value {
+        font-size: 17px;
+        font-weight: 800;
+        overflow-wrap: anywhere;
+      }
+
+      .main-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+        gap: 14px;
+      }
+
+      .panel {
+        padding: 16px;
+      }
+
+      .dashboard {
+        display: grid;
+        gap: 14px;
+      }
+
+      .hero-current {
+        display: grid;
+        gap: 10px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fbfcfe;
+      }
+
+      .current-title {
+        font-size: 26px;
+        font-weight: 850;
+      }
+
+      .countdown {
+        font-size: 52px;
+        line-height: 1;
+        font-weight: 900;
+        color: var(--accent);
+      }
+
+      .grid-2 {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .kv {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        background: white;
+      }
+
+      .kv span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 4px;
+      }
+
+      .kv strong {
+        font-size: 17px;
+      }
+
+      .cue {
+        border-left: 4px solid var(--accent);
+        padding: 10px 12px;
+        background: var(--accent-soft);
+        border-radius: 6px;
+        min-height: 48px;
+      }
+
+      .exercise-list,
+      .records {
+        display: grid;
+        gap: 10px;
+      }
+
+      .exercise-item {
+        padding: 12px;
+      }
+
+      .exercise-item.active {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+      }
+
+      .exercise-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+
+      .exercise-name {
+        font-weight: 800;
+      }
+
+      .exercise-meta,
+      .instructions,
+      .record small {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .instructions {
+        margin-top: 8px;
+        padding-left: 18px;
+      }
+
+      .bottom-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 14px;
+      }
+
+      .record {
+        padding: 10px 12px;
+        background: #fbfcfe;
+      }
+
+      .record strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .error {
+        color: var(--error);
+      }
+
+      @media (max-width: 940px) {
+        header {
+          display: grid;
+        }
+
+        .top-grid,
+        .main-grid,
+        .bottom-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Voice AI Coach</h1>
+        <div class="controls">
+          <button id="startBtn">Start listening</button>
+          <button id="muteBtn" class="secondary" disabled>Mute</button>
+          <button id="stopBtn" class="secondary" disabled>Stop</button>
+          <button id="ttsBtn" class="secondary">TTS on</button>
+        </div>
+      </header>
+
+      <section class="top-grid" aria-label="Status">
+        <div class="metric"><div class="metric-label">Connection</div><div id="connection" class="metric-value">idle</div></div>
+        <div class="metric"><div class="metric-label">Session</div><div id="session" class="metric-value">idle</div></div>
+        <div class="metric"><div class="metric-label">VAD</div><div id="vad" class="metric-value">silent</div></div>
+        <div class="metric"><div class="metric-label">ASR latency</div><div id="latency" class="metric-value">-</div></div>
+        <div class="metric"><div class="metric-label">Round</div><div id="round" class="metric-value">-</div></div>
+        <div class="metric"><div class="metric-label">Set</div><div id="set" class="metric-value">-</div></div>
+      </section>
+
+      <section class="main-grid">
+        <section class="panel dashboard">
+          <h2>训练仪表盘</h2>
+          <div class="hero-current">
+            <div class="metric-label">当前动作</div>
+            <div id="currentExercise" class="current-title">等待训练需求</div>
+            <div id="countdown" class="countdown">-</div>
+            <div class="grid-2">
+              <div class="kv"><span>Phase</span><strong id="phase">idle</strong></div>
+              <div class="kv"><span>Tempo</span><strong id="tempo">normal</strong></div>
+              <div class="kv"><span>Rest multiplier</span><strong id="restMultiplier">1.00</strong></div>
+              <div class="kv"><span>Set delta</span><strong id="setDelta">0</strong></div>
+            </div>
+            <div id="latestCue" class="cue">说出你的训练需求后，教练会开始生成计划。</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>完整训练计划</h2>
+          <div id="planSummary" class="exercise-meta">暂无计划</div>
+          <div id="exerciseList" class="exercise-list"></div>
+        </section>
+      </section>
+
+      <section class="bottom-grid">
+        <section class="panel">
+          <h2>语音反馈</h2>
+          <div id="feedbackRecords" class="records"></div>
+        </section>
+        <section class="panel">
+          <h2>实时调整</h2>
+          <div id="adjustmentRecords" class="records"></div>
+        </section>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const startBtn = $("startBtn");
+      const muteBtn = $("muteBtn");
+      const stopBtn = $("stopBtn");
+      const ttsBtn = $("ttsBtn");
+
+      let ws = null;
+      let audioContext = null;
+      let mediaStream = null;
+      let sourceNode = null;
+      let workletNode = null;
+      let muted = false;
+      let ttsEnabled = true;
+      let suppressMicUntil = 0;
+      let speaking = false;
+      const ttsQueue = [];
+      let workoutPlan = null;
+      let workoutIntent = null;
+
+      function sendControl(type) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type }));
+        }
+      }
+
+      function setText(id, value) {
+        $(id).textContent = value ?? "-";
+      }
+
+      function addRecord(containerId, title, text, meta = "") {
+        const entry = document.createElement("div");
+        entry.className = "record";
+        const strong = document.createElement("strong");
+        strong.textContent = title;
+        const body = document.createElement("div");
+        body.textContent = text;
+        entry.appendChild(strong);
+        entry.appendChild(body);
+        if (meta) {
+          const small = document.createElement("small");
+          small.textContent = meta;
+          entry.appendChild(small);
+        }
+        $(containerId).prepend(entry);
+      }
+
+      function queueSpeech(text) {
+        if (!ttsEnabled || !("speechSynthesis" in window) || !text) {
+          return;
+        }
+        ttsQueue.push(text);
+        playNextSpeech();
+      }
+
+      function playNextSpeech() {
+        if (speaking || ttsQueue.length === 0) {
+          return;
+        }
+        speaking = true;
+        suppressMicUntil = performance.now() + 3000;
+        sendControl("mute");
+        const text = ttsQueue.shift();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = /[\u4e00-\u9fff]/.test(text) ? "zh-CN" : "en-US";
+        utterance.rate = 1;
+        utterance.onend = () => {
+          speaking = false;
+          suppressMicUntil = performance.now() + 500;
+          if (!muted && ttsQueue.length === 0) {
+            window.setTimeout(() => sendControl("unmute"), 450);
+          }
+          playNextSpeech();
+        };
+        utterance.onerror = utterance.onend;
+        window.speechSynthesis.speak(utterance);
+      }
+
+      function renderPlan(intent, plan) {
+        if (intent && Object.keys(intent).length > 0) {
+          workoutIntent = intent;
+        }
+        workoutPlan = plan;
+        const exercises = plan?.exercises || [];
+        const summaryIntent = workoutIntent || {};
+        const targetMuscles = Array.isArray(summaryIntent.target_muscles)
+          ? summaryIntent.target_muscles.join(", ")
+          : summaryIntent.target_muscles;
+        setText(
+          "planSummary",
+          `目标: ${summaryIntent.session_goal || "-"} | 目标肌群: ${targetMuscles || "-"} | 时长: ${summaryIntent.duration_minutes || "-"} 分钟 | 轮数: ${plan?.rounds || "-"}`
+        );
+        $("exerciseList").innerHTML = "";
+        exercises.forEach((exercise, index) => {
+          const item = document.createElement("div");
+          item.className = "exercise-item";
+          item.dataset.index = String(index);
+          item.innerHTML = `
+            <div class="exercise-head">
+              <div class="exercise-name">${exercise.display_name || exercise.exercise_name || exercise.exercise || "-"}</div>
+              <div class="exercise-meta">${exercise.total_sets || "-"} 组 · 休息 ${exercise.rest_seconds || "-"} 秒</div>
+            </div>
+            <div class="exercise-meta">平均每组 ${exercise.avg_set_time || "-"} 秒 · tempo ${exercise.demo_speed || "-"}</div>
+            <ol class="instructions">${(exercise.instructions || []).map((step) => `<li>${step}</li>`).join("")}</ol>
+          `;
+          $("exerciseList").appendChild(item);
+        });
+      }
+
+      function highlightExercise(index) {
+        document.querySelectorAll(".exercise-item").forEach((item) => item.classList.remove("active"));
+        const active = document.querySelector(`.exercise-item[data-index="${index}"]`);
+        if (active) {
+          active.classList.add("active");
+        }
+      }
+
+      function applyExerciseChanges(changes) {
+        if (!workoutPlan || !Array.isArray(changes)) {
+          return;
+        }
+        changes.forEach((change) => {
+          const exercise = workoutPlan.exercises?.[change.exercise_index];
+          if (exercise && change.after) {
+            exercise.total_sets = change.after.total_sets;
+            exercise.rest_seconds = change.after.rest_seconds;
+          }
+        });
+        renderPlan(workoutIntent || {}, workoutPlan);
+      }
+
+      function handleRuntimeEvent(eventType, payload) {
+        if (eventType === "plan_generated") {
+          renderPlan(payload.intent, payload.workout_plan);
+        } else if (eventType === "workout_started") {
+          renderPlan(payload.initial_intent, payload.workout_plan);
+        } else if (eventType === "round_start") {
+          setText("round", `${payload.current_round}/${payload.total_rounds}`);
+        } else if (eventType === "exercise_start") {
+          const ex = payload.exercise || {};
+          setText("currentExercise", ex.display_name || ex.exercise_name || "-");
+          setText("set", `0/${ex.total_sets || "-"}`);
+          highlightExercise(payload.exercise_index);
+        } else if (eventType === "set_start") {
+          setText("set", `${payload.current_set}/${payload.total_sets}`);
+          setText("tempo", payload.tempo_cue || "normal");
+        } else if (eventType === "phase_start") {
+          setText("phase", payload.phase);
+          setText("countdown", payload.seconds);
+        } else if (eventType === "phase_tick") {
+          setText("phase", payload.phase);
+          setText("countdown", payload.seconds_remaining);
+          setText("tempo", payload.tempo_cue || "normal");
+          setText("restMultiplier", Number(payload.rest_multiplier || 1).toFixed(2));
+          setText("setDelta", payload.set_delta || 0);
+        } else if (eventType === "rest_start") {
+          setText("countdown", payload.seconds);
+        } else if (eventType === "feedback_received") {
+          addRecord("feedbackRecords", "用户反馈", payload.text, payload.phase || "");
+        } else if (eventType === "feedback_understood") {
+          addRecord("feedbackRecords", "反馈理解", `${payload.intent} · confidence ${payload.confidence}`, payload.reason || "");
+        } else if (eventType === "adjustment_applied") {
+          applyExerciseChanges(payload.exercise_changes);
+          const adjustmentParts = [];
+          const setDelta = Number(payload.set_delta || 0);
+          const restMultiplier = Number(payload.rest_multiplier || 1);
+          if (setDelta < 0) adjustmentParts.push(`减少 ${Math.abs(setDelta)} 组动作`);
+          if (setDelta > 0) adjustmentParts.push(`增加 ${setDelta} 组动作`);
+          if (restMultiplier > 1.02) adjustmentParts.push("延长休息时间");
+          if (restMultiplier < 0.98) adjustmentParts.push("缩短休息时间");
+          addRecord("adjustmentRecords", "强度调整", adjustmentParts.join("，") || "训练安排已更新", payload.reason || "");
+        } else if (eventType === "exercise_replaced") {
+          addRecord("adjustmentRecords", "动作替换", `${payload.before} → ${payload.after}`, payload.reason || "");
+        } else if (eventType === "log_saved") {
+          addRecord("adjustmentRecords", "日志已保存", payload.path);
+        } else if (eventType === "session_end") {
+          setText("session", "ended");
+          addRecord("adjustmentRecords", "训练结束", payload.reason || "");
+        }
+      }
+
+      async function start() {
+        startBtn.disabled = true;
+        setText("connection", "connecting");
+
+        ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/audio`);
+        ws.binaryType = "arraybuffer";
+
+        ws.onopen = async () => {
+          try {
+            mediaStream = await navigator.mediaDevices.getUserMedia({
+              audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+            });
+            audioContext = new AudioContext();
+            await audioContext.audioWorklet.addModule("/static/audio-worklet.js");
+            sourceNode = audioContext.createMediaStreamSource(mediaStream);
+            workletNode = new AudioWorkletNode(audioContext, "pcm-downsample-processor");
+            workletNode.port.onmessage = (event) => {
+              if (!ws || ws.readyState !== WebSocket.OPEN || muted || performance.now() < suppressMicUntil) {
+                return;
+              }
+              ws.send(event.data);
+            };
+            sourceNode.connect(workletNode);
+            sendControl("start");
+            setText("connection", "listening");
+            muteBtn.disabled = false;
+            stopBtn.disabled = false;
+          } catch (error) {
+            addRecord("feedbackRecords", "Browser error", String(error), "microphone setup failed");
+            setText("connection", "error");
+            startBtn.disabled = false;
+          }
+        };
+
+        ws.onmessage = (event) => {
+          const payload = JSON.parse(event.data);
+          if (payload.type === "state_update") {
+            setText("connection", payload.status);
+          } else if (payload.type === "session_state") {
+            setText("session", payload.state);
+          } else if (payload.type === "vad_start") {
+            setText("vad", "speech");
+          } else if (payload.type === "vad_end") {
+            setText("vad", "transcribing");
+          } else if (payload.type === "transcript_final") {
+            setText("vad", "silent");
+            setText("latency", `${payload.latency_ms} ms`);
+          } else if (payload.type === "user_transcript") {
+            addRecord("feedbackRecords", payload.target === "initial_intent" ? "初始需求" : "语音反馈", payload.text, payload.target);
+          } else if (payload.type === "coach_message") {
+            if (payload.display) {
+              setText("latestCue", payload.message);
+            }
+            if (payload.speak) {
+              queueSpeech(payload.speech_text || payload.message);
+            }
+          } else if (payload.type === "runtime_event") {
+            handleRuntimeEvent(payload.event_type, payload.payload || {});
+          } else if (payload.type === "session_summary") {
+            addRecord("adjustmentRecords", "Session summary", `end_reason=${payload.result?.session_end_reason || "-"}`);
+          } else if (payload.type === "metrics") {
+            setText("latency", `${payload.latency_ms} ms`);
+          } else if (payload.type === "error") {
+            addRecord("feedbackRecords", "Server error", payload.message);
+          }
+        };
+
+        ws.onclose = () => {
+          setText("connection", "closed");
+          startBtn.disabled = false;
+          muteBtn.disabled = true;
+          stopBtn.disabled = true;
+        };
+        ws.onerror = () => setText("connection", "error");
+      }
+
+      async function stop() {
+        sendControl("stop");
+        window.speechSynthesis?.cancel();
+        ttsQueue.length = 0;
+        speaking = false;
+        if (workletNode) workletNode.disconnect();
+        if (sourceNode) sourceNode.disconnect();
+        if (mediaStream) mediaStream.getTracks().forEach((track) => track.stop());
+        if (audioContext) await audioContext.close();
+        if (ws) ws.close();
+        muted = false;
+        muteBtn.textContent = "Mute";
+        setText("vad", "silent");
+      }
+
+      startBtn.addEventListener("click", start);
+      stopBtn.addEventListener("click", stop);
+      muteBtn.addEventListener("click", () => {
+        muted = !muted;
+        muteBtn.textContent = muted ? "Unmute" : "Mute";
+        sendControl(muted ? "mute" : "unmute");
+      });
+      ttsBtn.addEventListener("click", () => {
+        ttsEnabled = !ttsEnabled;
+        ttsBtn.textContent = ttsEnabled ? "TTS on" : "TTS off";
+        if (!ttsEnabled && "speechSynthesis" in window) {
+          window.speechSynthesis.cancel();
+          ttsQueue.length = 0;
+          speaking = false;
+        }
+      });
+    </script>
+  </body>
+</html>

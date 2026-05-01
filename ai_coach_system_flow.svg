@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="980" viewBox="0 0 1400 980">
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; font-size: 34px; font-weight: 700; fill: #1f2937; }
+      .subtitle { font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; font-size: 18px; fill: #4b5563; }
+      .band-title { font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; font-size: 18px; font-weight: 700; fill: #374151; }
+      .box-title { font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; font-size: 18px; font-weight: 700; fill: #111827; }
+      .box-text { font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; font-size: 14px; fill: #374151; }
+      .small { font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; font-size: 13px; fill: #4b5563; }
+      .note { font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; font-size: 14px; fill: #1f2937; }
+      .card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.6; rx: 10; }
+      .llm { fill: #eef2ff; stroke: #818cf8; }
+      .rule { fill: #ecfdf5; stroke: #34d399; }
+      .runtime { fill: #fff7ed; stroke: #fb923c; }
+      .data { fill: #f0f9ff; stroke: #38bdf8; }
+      .voice { fill: #fdf2f8; stroke: #f472b6; }
+      .debug { fill: #f8fafc; stroke: #94a3b8; }
+      .arrow { stroke: #475569; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .loop { stroke: #0f766e; stroke-width: 2.6; fill: none; marker-end: url(#arrow-green); stroke-dasharray: 9 7; }
+      .data-arrow { stroke: #0284c7; stroke-width: 2; fill: none; marker-end: url(#arrow-blue); stroke-dasharray: 6 5; }
+      .label-pill { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1; rx: 12; }
+      .band { fill: #ffffff; stroke: #e5e7eb; stroke-width: 1.2; rx: 16; opacity: 0.72; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f766e"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0284c7"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="980"/>
+  <text class="title" x="64" y="62">AI Coach 自适应训练系统流程图</text>
+  <text class="subtitle" x="64" y="94">主入口为浏览器语音 AI Coach；ASR 转写文本进入核心语义理解与训练控制闭环</text>
+
+  <rect class="band" x="42" y="128" width="1316" height="150"/>
+  <text class="band-title" x="64" y="158">输入层</text>
+
+  <rect class="card debug" x="92" y="178" width="210" height="72"/>
+  <text class="box-title" x="118" y="208">CLI 文本入口</text>
+  <text class="box-text" x="118" y="232">开发调试 / 端到端测试</text>
+
+  <rect class="card voice" x="412" y="178" width="270" height="72"/>
+  <text class="box-title" x="438" y="208">浏览器语音主入口</text>
+  <text class="box-text" x="438" y="232">voice_demo/coach_server.py</text>
+
+  <rect class="card voice" x="792" y="178" width="250" height="72"/>
+  <text class="box-title" x="818" y="208">语音转文本</text>
+  <text class="box-text" x="818" y="232">faster-whisper / mock ASR</text>
+
+  <rect class="label-pill" x="1118" y="188" width="178" height="48"/>
+  <text class="small" x="1141" y="218">ASR 文本进入核心闭环</text>
+
+  <path class="data-arrow" d="M 302 214 L 412 214"/>
+  <path class="arrow" d="M 682 214 L 792 214"/>
+  <path class="arrow" d="M 1042 214 L 1118 214"/>
+
+  <rect class="band" x="42" y="308" width="1316" height="245"/>
+  <text class="band-title" x="64" y="338">计划生成层</text>
+
+  <rect class="card llm" x="92" y="372" width="250" height="104"/>
+  <text class="box-title" x="118" y="402">Intent Modeling</text>
+  <text class="box-text" x="118" y="426">LLM 解析用户目标</text>
+  <text class="box-text" x="118" y="448">session_goal / muscles</text>
+  <text class="box-text" x="118" y="470">equipment / avoid_body_parts</text>
+
+  <rect class="card data" x="434" y="372" width="260" height="104"/>
+  <text class="box-title" x="460" y="402">动作库过滤</text>
+  <text class="box-text" x="460" y="426">libraries/exercise_library.json</text>
+  <text class="box-text" x="460" y="448">目标肌群 / 器械 / 避免部位</text>
+  <text class="box-text" x="460" y="470">生成候选动作集合</text>
+
+  <rect class="card llm" x="786" y="372" width="250" height="104"/>
+  <text class="box-title" x="812" y="402">Workout Planner</text>
+  <text class="box-text" x="812" y="426">LLM 在候选动作中生成计划</text>
+  <text class="box-text" x="812" y="448">rounds / sets / rest</text>
+  <text class="box-text" x="812" y="470">输出结构化 JSON</text>
+
+  <rect class="card data" x="1124" y="372" width="190" height="104"/>
+  <text class="box-title" x="1150" y="402">训练计划</text>
+  <text class="box-text" x="1150" y="426">workout_plan</text>
+  <text class="box-text" x="1150" y="448">只包含库内动作 ID</text>
+  <text class="box-text" x="1150" y="470">写入 data/</text>
+
+  <path class="arrow" d="M 197 250 L 197 372"/>
+  <path class="arrow" d="M 1207 236 C 1207 294 217 294 217 372"/>
+  <path class="arrow" d="M 342 424 L 434 424"/>
+  <path class="arrow" d="M 694 424 L 786 424"/>
+  <path class="arrow" d="M 1036 424 L 1124 424"/>
+
+  <rect class="band" x="42" y="582" width="1316" height="292"/>
+  <text class="band-title" x="64" y="612">执行与反馈闭环</text>
+
+  <rect class="card data" x="92" y="650" width="250" height="104"/>
+  <text class="box-title" x="118" y="680">Demo Library Translation</text>
+  <text class="box-text" x="118" y="704">libraries/exercise_demo_library.json</text>
+  <text class="box-text" x="118" y="726">动作 ID → 展示名称</text>
+  <text class="box-text" x="118" y="748">动作说明 instructions</text>
+
+  <rect class="card runtime" x="432" y="640" width="260" height="124"/>
+  <text class="box-title" x="458" y="670">Workout Executor</text>
+  <text class="box-text" x="458" y="694">状态机执行训练</text>
+  <text class="box-text" x="458" y="716">round / exercise / set / phase</text>
+  <text class="box-text" x="458" y="738">tempo_cue 驱动 demo_speed</text>
+  <text class="box-text" x="458" y="760">输出 runtime events</text>
+
+  <rect class="card llm" x="794" y="640" width="250" height="124"/>
+  <text class="box-title" x="820" y="670">Feedback Understanding</text>
+  <text class="box-text" x="820" y="694">LLM 解析自然语言反馈</text>
+  <text class="box-text" x="820" y="716">intent / fatigue / difficulty</text>
+  <text class="box-text" x="820" y="738">preference / confidence / reason</text>
+  <text class="box-text" x="820" y="760">失败时记录日志并继续</text>
+
+  <rect class="card rule" x="1128" y="640" width="190" height="124"/>
+  <text class="box-title" x="1154" y="670">Adaptive Rules</text>
+  <text class="box-text" x="1154" y="694">显式规则更新训练</text>
+  <text class="box-text" x="1154" y="716">组数 / 休息 / 节奏</text>
+  <text class="box-text" x="1154" y="738">疼痛与停止需确认</text>
+  <text class="box-text" x="1154" y="760">偏好不喜欢：跳过当前动作</text>
+
+  <rect class="card" x="432" y="808" width="260" height="44"/>
+  <text class="note" x="460" y="836">Session Log: 初始/最终计划、状态时间线、调整、对话、事件流</text>
+
+  <path class="arrow" d="M 1219 476 C 1219 560 217 560 217 650"/>
+  <path class="arrow" d="M 342 702 L 432 702"/>
+  <path class="loop" d="M 692 702 L 794 702"/>
+  <path class="loop" d="M 1044 702 L 1128 702"/>
+  <path class="loop" d="M 1128 764 C 1030 852 690 888 562 764"/>
+  <path class="data-arrow" d="M 562 764 L 562 808"/>
+
+  <rect class="card" x="88" y="900" width="1228" height="44"/>
+  <text class="note" x="118" y="928">关键原则：用户主交互是语音；ASR 生成的文本进入 LLM 语义层，训练调整仍经过规则模块和安全边界约束。</text>
+</svg>

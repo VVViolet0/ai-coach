@@ -1,6 +1,14 @@
-﻿.env
+.env
+.venv/
+venv/
+env/
 __pycache__/
-*.pyc
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .idea/
 .vscode/
 
@@ -13,3 +21,12 @@ data/demo_*_log.json
 data/my_session_log.json
 data/intent_test_outputs.json
 data/*.tmp
+
+# Runtime json artifacts in data.
+data/*.json
+
+# Voice demo local runtime files
+voice_demo/*.log
+voice_demo/models/*
+!voice_demo/models/.gitignore
+voice_demo/static/*.map

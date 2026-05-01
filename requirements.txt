@@ -1,0 +1,8 @@
+# Core AI Coach runtime
+ollama>=0.4.0
+
+# Test runner
+pytest>=7.4
+
+# Browser voice demo and voice coach dependencies
+-r voice_demo/requirements.txt

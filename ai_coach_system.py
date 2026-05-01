@@ -51,6 +51,13 @@ class AICoachSystem:
         else:
             print(message)
 
+    def _emit_event(self, io: Optional[ExecutorIO], event_type: str, payload: Dict[str, Any]) -> None:
+        if not io:
+            return
+        send_event = getattr(io, "send_event", None)
+        if callable(send_event):
+            send_event(event_type, payload)
+
     def _summarize_workout_plan(self, plan: Dict[str, Any], intent: Dict[str, Any]) -> str:
         plan_obj = plan["workout_plan"]
         lines = [
@@ -96,6 +103,16 @@ class AICoachSystem:
         plan = self.build_workout_plan(intent)
         plan_file = plan_output_path or str(self.output_dir / f"workout_plan_{now}.json")
         self.save_json(plan, plan_file)
+        self._emit_event(
+            io,
+            "plan_generated",
+            {
+                "intent": intent,
+                "workout_plan": plan["workout_plan"],
+                "intent_path": intent_file,
+                "plan_path": plan_file,
+            },
+        )
 
         log_file = session_log_path or str(self.output_dir / f"session_log_{now}.json")
         session_end_reason = "skipped"

@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local Voice Module Demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fa;
+        --panel: #ffffff;
+        --ink: #18202a;
+        --muted: #647184;
+        --line: #d9dee8;
+        --accent: #0f766e;
+        --accent-dark: #115e59;
+        --warn: #b45309;
+        --error: #b91c1c;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(1040px, calc(100vw - 32px));
+        margin: 32px auto;
+        display: grid;
+        gap: 16px;
+      }
+
+      header {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-end;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 28px;
+        line-height: 1.15;
+        letter-spacing: 0;
+      }
+
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .metric,
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      .metric {
+        padding: 14px;
+      }
+
+      .metric-label {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+
+      .metric-value {
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      button {
+        appearance: none;
+        border: 1px solid var(--accent-dark);
+        border-radius: 8px;
+        background: var(--accent);
+        color: white;
+        font: inherit;
+        font-weight: 700;
+        min-height: 40px;
+        padding: 0 14px;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        background: white;
+        color: var(--accent-dark);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .panel {
+        padding: 16px;
+      }
+
+      .panel h2 {
+        margin: 0 0 12px;
+        font-size: 16px;
+      }
+
+      .log {
+        display: grid;
+        gap: 10px;
+        min-height: 260px;
+        align-content: start;
+      }
+
+      .entry {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: #fbfcfe;
+      }
+
+      .entry strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .entry small {
+        display: block;
+        color: var(--muted);
+        margin-top: 6px;
+      }
+
+      .error {
+        color: var(--error);
+      }
+
+      .warn {
+        color: var(--warn);
+      }
+
+      @media (max-width: 760px) {
+        header {
+          display: grid;
+        }
+
+        .status-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Local Voice Module Demo</h1>
+        </div>
+        <div class="controls">
+          <button id="startBtn">Start listening</button>
+          <button id="muteBtn" class="secondary" disabled>Mute</button>
+          <button id="stopBtn" class="secondary" disabled>Stop</button>
+          <button id="ttsBtn" class="secondary">TTS on</button>
+        </div>
+      </header>
+
+      <section class="status-grid" aria-label="Status">
+        <div class="metric">
+          <div class="metric-label">Connection</div>
+          <div id="connection" class="metric-value">idle</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">VAD</div>
+          <div id="vad" class="metric-value">silent</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">ASR latency</div>
+          <div id="latency" class="metric-value">-</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Segment</div>
+          <div id="segment" class="metric-value">-</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Transcripts</h2>
+        <div id="log" class="log"></div>
+      </section>
+    </main>
+
+    <script>
+      const startBtn = document.getElementById("startBtn");
+      const muteBtn = document.getElementById("muteBtn");
+      const stopBtn = document.getElementById("stopBtn");
+      const ttsBtn = document.getElementById("ttsBtn");
+      const connectionEl = document.getElementById("connection");
+      const vadEl = document.getElementById("vad");
+      const latencyEl = document.getElementById("latency");
+      const segmentEl = document.getElementById("segment");
+      const logEl = document.getElementById("log");
+
+      let ws = null;
+      let audioContext = null;
+      let mediaStream = null;
+      let sourceNode = null;
+      let workletNode = null;
+      let muted = false;
+      let ttsEnabled = true;
+      let suppressMicUntil = 0;
+
+      function setConnection(value) {
+        connectionEl.textContent = value;
+      }
+
+      function sendControl(type) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type }));
+        }
+      }
+
+      function addLog(title, text, meta = "") {
+        const entry = document.createElement("div");
+        entry.className = "entry";
+        const strong = document.createElement("strong");
+        strong.textContent = title;
+        const body = document.createElement("div");
+        body.textContent = text;
+        entry.appendChild(strong);
+        entry.appendChild(body);
+        if (meta) {
+          const small = document.createElement("small");
+          small.textContent = meta;
+          entry.appendChild(small);
+        }
+        logEl.prepend(entry);
+      }
+
+      function speakTranscript(text) {
+        if (!ttsEnabled || !("speechSynthesis" in window) || !text) {
+          return;
+        }
+
+        suppressMicUntil = performance.now() + 3000;
+        sendControl("mute");
+        const utterance = new SpeechSynthesisUtterance(`我听到的是：${text}`);
+        utterance.lang = /[\u4e00-\u9fff]/.test(text) ? "zh-CN" : "en-US";
+        utterance.rate = 1;
+        utterance.onend = () => {
+          suppressMicUntil = performance.now() + 400;
+          if (!muted) {
+            window.setTimeout(() => sendControl("unmute"), 350);
+          }
+        };
+        utterance.onerror = utterance.onend;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+      }
+
+      async function start() {
+        startBtn.disabled = true;
+        setConnection("connecting");
+
+        ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/audio`);
+        ws.binaryType = "arraybuffer";
+
+        ws.onopen = async () => {
+          try {
+            mediaStream = await navigator.mediaDevices.getUserMedia({
+              audio: {
+                channelCount: 1,
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+              }
+            });
+            audioContext = new AudioContext();
+            await audioContext.audioWorklet.addModule("/static/audio-worklet.js");
+            sourceNode = audioContext.createMediaStreamSource(mediaStream);
+            workletNode = new AudioWorkletNode(audioContext, "pcm-downsample-processor");
+            workletNode.port.onmessage = (event) => {
+              if (!ws || ws.readyState !== WebSocket.OPEN || muted) {
+                return;
+              }
+              if (performance.now() < suppressMicUntil) {
+                return;
+              }
+              ws.send(event.data);
+            };
+            sourceNode.connect(workletNode);
+            sendControl("start");
+            setConnection("listening");
+            muteBtn.disabled = false;
+            stopBtn.disabled = false;
+          } catch (error) {
+            addLog("Browser error", String(error), "microphone setup failed");
+            setConnection("error");
+            startBtn.disabled = false;
+          }
+        };
+
+        ws.onmessage = (event) => {
+          const payload = JSON.parse(event.data);
+          if (payload.type === "state_update") {
+            setConnection(payload.status);
+          } else if (payload.type === "vad_start") {
+            vadEl.textContent = "speech";
+          } else if (payload.type === "vad_end") {
+            vadEl.textContent = "transcribing";
+            segmentEl.textContent = `${payload.segment_ms} ms`;
+          } else if (payload.type === "transcript_final") {
+            vadEl.textContent = "silent";
+            latencyEl.textContent = `${payload.latency_ms} ms`;
+            segmentEl.textContent = `${payload.segment_ms} ms`;
+            addLog("Final transcript", payload.text || "(empty)", `ASR ${payload.asr_ms} ms · ${payload.language || "auto"}`);
+            speakTranscript(payload.text);
+          } else if (payload.type === "metrics") {
+            latencyEl.textContent = `${payload.latency_ms} ms`;
+          } else if (payload.type === "error") {
+            addLog("Server error", payload.message, "");
+          }
+        };
+
+        ws.onclose = () => {
+          setConnection("closed");
+          startBtn.disabled = false;
+          muteBtn.disabled = true;
+          stopBtn.disabled = true;
+        };
+
+        ws.onerror = () => {
+          setConnection("error");
+        };
+      }
+
+      async function stop() {
+        sendControl("stop");
+        if (workletNode) {
+          workletNode.disconnect();
+        }
+        if (sourceNode) {
+          sourceNode.disconnect();
+        }
+        if (mediaStream) {
+          mediaStream.getTracks().forEach((track) => track.stop());
+        }
+        if (audioContext) {
+          await audioContext.close();
+        }
+        if (ws) {
+          ws.close();
+        }
+        muted = false;
+        muteBtn.textContent = "Mute";
+        vadEl.textContent = "silent";
+      }
+
+      startBtn.addEventListener("click", start);
+      stopBtn.addEventListener("click", stop);
+      muteBtn.addEventListener("click", () => {
+        muted = !muted;
+        muteBtn.textContent = muted ? "Unmute" : "Mute";
+        sendControl(muted ? "mute" : "unmute");
+      });
+      ttsBtn.addEventListener("click", () => {
+        ttsEnabled = !ttsEnabled;
+        ttsBtn.textContent = ttsEnabled ? "TTS on" : "TTS off";
+        if (!ttsEnabled && "speechSynthesis" in window) {
+          window.speechSynthesis.cancel();
+        }
+      });
+    </script>
+  </body>
+</html>
+

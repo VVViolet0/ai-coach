@@ -13,6 +13,7 @@ from feedback_understanding import (
     understand_feedback,
 )
 
+
 MIN_REST_SECONDS = 5
 MAX_REST_SECONDS = 180
 MIN_SETS = 1
@@ -22,11 +23,47 @@ MIN_REST_MULTIPLIER = 0.5
 MAX_REST_MULTIPLIER = 2.0
 MIN_SET_DELTA = -3
 MAX_SET_DELTA = 3
-MIN_DEMO_SPEED = 0.75
-MAX_DEMO_SPEED = 1.25
-EXERCISE_DEMO_LIBRARY_PATH = Path('libraries/exercise_demo_library.json')
-YES_WORDS = {"yes", "y", "continue", "go", "ok", "okay"}
-NO_WORDS = {"no", "n", "stop", "quit", "end"}
+YES_WORDS = {
+    "yes",
+    "y",
+    "continue",
+    "go",
+    "ok",
+    "okay",
+    "是",
+    "对",
+    "继续",
+    "可以",
+    "好的",
+    "好",
+    "没问题",
+    "沒問題",
+    "行",
+    "yeah",
+    "yep",
+    "耶",
+}
+NO_WORDS = {
+    "no",
+    "n",
+    "stop",
+    "quit",
+    "end",
+    "不",
+    "不要",
+    "停止",
+    "结束",
+    "結束",
+    "停",
+    "停下",
+    "不继续",
+    "不繼續",
+    "不用",
+    "nope",
+    "否",
+}
+CONFIRMATION_STRIP_CHARS = " \t\r\n,，.。!！?？;；:："
+EXERCISE_DEMO_LIBRARY_PATH = Path("libraries/exercise_demo_library.json")
 
 
 class ExecutorIO(Protocol):
@@ -116,7 +153,6 @@ class SessionState:
     rest_multiplier: float = 1.0
     set_delta: int = 0
     tempo_cue: str = "normal"
-    demo_speed: float = 1.0
     is_active: bool = True
     end_reason: str = "completed"
     awaiting_pain_confirmation: bool = False
@@ -178,15 +214,6 @@ def load_exercise_demo_library(path: str | Path = EXERCISE_DEMO_LIBRARY_PATH) ->
     return payload
 
 
-def _resolve_demo_speed(tempo_cue: str) -> float:
-    speed_map = {
-        "normal": 1.0,
-        "slower": 0.9,
-        "faster": 1.1,
-    }
-    return speed_map.get(tempo_cue, 1.0)
-
-
 def translate_plan_for_demo(workout_plan: Dict) -> Dict:
     exercise_demo_library = load_exercise_demo_library()
     demo_plan = {
@@ -240,12 +267,80 @@ class RuleFirstDecisionEngine:
         )
 
 
+class FeedbackWorker:
+    def __init__(
+        self,
+        state: SessionState,
+        io: ExecutorIO,
+        decision_engine: DecisionEngine,
+        feedback_understander: FeedbackUnderstander,
+        feedback_model: str,
+    ) -> None:
+        self._state = state
+        self._io = io
+        self._decision_engine = decision_engine
+        self._feedback_understander = feedback_understander
+        self._feedback_model = feedback_model
+        self._messages: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def submit(self, message: str) -> None:
+        self._messages.put(message)
+
+    def close(self) -> None:
+        self._messages.put(None)
+        self._thread.join(timeout=5)
+
+    def _run(self) -> None:
+        while True:
+            message = self._messages.get()
+            if message is None:
+                return
+            _emit_runtime_event(self._io, "feedback_processing_start", {"text": message})
+            _handle_user_message(
+                message,
+                self._state,
+                self._io,
+                self._decision_engine,
+                self._feedback_understander,
+                self._feedback_model,
+            )
+            _emit_runtime_event(self._io, "feedback_processing_end", {"text": message})
+
+
 def _clamp_int(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
-def _clamp_float(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
+def _normalize_confirmation_text(text: str) -> str:
+    return text.strip().lower().strip(CONFIRMATION_STRIP_CHARS)
+
+
+def _is_shorter_rest_request(understanding: FeedbackUnderstandingResult) -> bool:
+    text = f"{understanding.raw_text} {understanding.reason}".lower()
+    rest_terms = ("休息", "rest", "recovery", "break")
+    shorter_terms = (
+        "短",
+        "少",
+        "缩短",
+        "減少",
+        "减少",
+        "快一点",
+        "快一點",
+        "shorter",
+        "less",
+        "reduce",
+        "decrease",
+        "cut",
+    )
+    return any(term in text for term in rest_terms) and any(term in text for term in shorter_terms)
+
+
+def _emit_runtime_event(io: ExecutorIO, event_type: str, payload: Dict) -> None:
+    send_event = getattr(io, "send_event", None)
+    if callable(send_event):
+        send_event(event_type, payload)
 
 
 def _apply_condition_from_understanding(
@@ -289,7 +384,7 @@ def _build_decision_from_understanding(
         return DecisionResult(
             intent="stop",
             coach_reply=(
-                "I heard you may want to stop. Do you want to stop the workout now? (yes/no)"
+                "我听到你可能想停止训练。现在要停止吗？请回答“是”或“否”。"
             ),
             requires_confirmation=True,
             confirmation_type="stop",
@@ -299,8 +394,7 @@ def _build_decision_from_understanding(
         return DecisionResult(
             intent="pain",
             coach_reply=(
-                "I heard pain/discomfort. I reduced intensity now. "
-                "Do you want to continue? (yes/no)"
+                "我听到你有疼痛或不适。我已经降低强度。你还要继续吗？请回答“继续”或“停止”。"
             ),
             actions=[
                 AdjustmentAction(
@@ -334,6 +428,23 @@ def _build_decision_from_understanding(
             ],
         )
 
+    if understanding.intent == "preference_like" and _is_shorter_rest_request(understanding):
+        return DecisionResult(
+            intent="pace_up",
+            coach_reply="Got it. I will shorten upcoming rest a little.",
+            actions=[
+                AdjustmentAction(
+                    action_type="adjust_intensity",
+                    set_delta=0,
+                    rest_multiplier=0.85,
+                    tempo_cue="faster",
+                    reason="preference_like_shorter_rest",
+                    rule_id="preference_like_shorter_rest",
+                    state_reason="preference_like with shorter-rest request",
+                )
+            ],
+        )
+
     if understanding.intent == "pace_down":
         return DecisionResult(
             intent="pace_down",
@@ -351,10 +462,24 @@ def _build_decision_from_understanding(
             ],
         )
 
+    if understanding.intent == "preference_dislike":
+        return DecisionResult(
+            intent="preference_dislike",
+            coach_reply="Got it. I will skip this exercise and move to the next one.",
+            actions=[
+                AdjustmentAction(
+                    action_type="skip_current_exercise",
+                    reason="preference_dislike_skip_current",
+                    rule_id="preference_dislike_skip_current",
+                    state_reason="llm_intent=preference_dislike",
+                )
+            ],
+        )
+
     if understanding.intent in {"fatigue", "preference_dislike", "preference_like"}:
         return DecisionResult(
             intent=understanding.intent,
-            coach_reply="Thanks, I captured your feedback and updated upcoming blocks.",
+            coach_reply="",
         )
 
     fallback = decision_engine.decide(understanding.raw_text, state)
@@ -363,10 +488,7 @@ def _build_decision_from_understanding(
 
     return DecisionResult(
         intent="unknown",
-        coach_reply=(
-            "I understood your message and updated your condition state. "
-            "I will keep guiding and adjusting as we continue."
-        ),
+        coach_reply="",
     )
 
 
@@ -407,31 +529,6 @@ def _find_replacement_exercise(state: SessionState) -> Optional[str]:
 
 def _derive_state_actions(state: SessionState) -> List[AdjustmentAction]:
     condition = state.user_condition
-
-    if condition.preference == "dislike":
-        replacement = _find_replacement_exercise(state)
-        if replacement:
-            return [
-                AdjustmentAction(
-                    action_type="replace_exercise",
-                    replacement_exercise=replacement,
-                    reason="preference_dislike_replace",
-                    rule_id="preference_dislike_replace",
-                    state_reason="preference=dislike",
-                )
-            ]
-
-        return [
-            AdjustmentAction(
-                action_type="adjust_intensity",
-                set_delta=-1,
-                rest_multiplier=1.2,
-                tempo_cue="slower",
-                reason="preference_dislike_fallback_downshift",
-                rule_id="preference_dislike_fallback",
-                state_reason="preference=dislike but no replacement available",
-            )
-        ]
 
     if condition.fatigue_level == "high" or condition.difficulty_level == "hard":
         return [
@@ -484,21 +581,21 @@ def _apply_adjustment_action(
     io: ExecutorIO,
     source_intent: str = "",
     confidence: float = 0.0,
-) -> Optional[str]:
+) -> None:
     if action.action_type == "stop":
         state.is_active = False
         state.end_reason = action.reason or "user_stop"
         state.log_event("session_stop", {"reason": state.end_reason})
-        return None
+        return
 
     if action.action_type == "replace_exercise":
         target_name = action.replacement_exercise
         if not target_name:
-            return None
+            return
 
         replacement_def = next((ex for ex in state.exercise_library if ex.get("name") == target_name), None)
         if not replacement_def:
-            return None
+            return
 
         exercise = state.workout_plan["exercises"][state.current_exercise]
         before_name = exercise["exercise_name"]
@@ -535,11 +632,80 @@ def _apply_adjustment_action(
                 "state_reason": action.state_reason,
             },
         )
+        _emit_runtime_event(
+            io,
+            "exercise_replaced",
+            {
+                "before": before_name,
+                "after": target_name,
+                "exercise_index": state.current_exercise,
+                "exercise": exercise,
+                "reason": action.reason,
+                "rule_id": action.rule_id,
+            },
+        )
         io.send(f"[Adjustment] replaced exercise: {before_name} -> {target_name}")
-        return f"I replaced the current exercise from {before_name} to {target_name}."
+        return
+
+    if action.action_type == "skip_current_exercise":
+        if not state.workout_plan["exercises"]:
+            return
+        if state.current_exercise >= len(state.workout_plan["exercises"]):
+            return
+
+        exercise = state.workout_plan["exercises"][state.current_exercise]
+        before_sets = int(exercise["total_sets"])
+        # Only skip the remaining sets of the current exercise.
+        # Keep rest_seconds unchanged and do not touch other exercises.
+        effective_sets = _clamp_int(max(state.current_set, 1), MIN_SETS, MAX_SETS)
+        exercise["total_sets"] = min(before_sets, effective_sets)
+
+        state.adjustment_log.append(
+            {
+                "action_type": action.action_type,
+                "reason": action.reason,
+                "rule_id": action.rule_id,
+                "state_reason": action.state_reason,
+                "source_intent": source_intent,
+                "confidence": confidence,
+                "exercise_change": {
+                    "exercise_index": state.current_exercise,
+                    "exercise_name": exercise["exercise_name"],
+                    "before": {"total_sets": before_sets, "rest_seconds": exercise["rest_seconds"]},
+                    "after": {
+                        "total_sets": exercise["total_sets"],
+                        "rest_seconds": exercise["rest_seconds"],
+                    },
+                },
+            }
+        )
+        state.log_event(
+            "exercise_skipped_current",
+            {
+                "exercise_index": state.current_exercise,
+                "exercise_name": exercise["exercise_name"],
+                "before_total_sets": before_sets,
+                "after_total_sets": exercise["total_sets"],
+                "rule_id": action.rule_id,
+            },
+        )
+        _emit_runtime_event(
+            io,
+            "exercise_skipped_current",
+            {
+                "exercise_index": state.current_exercise,
+                "exercise_name": exercise["exercise_name"],
+                "before_total_sets": before_sets,
+                "after_total_sets": exercise["total_sets"],
+                "reason": action.reason,
+                "rule_id": action.rule_id,
+            },
+        )
+        io.send(f"[Adjustment] skipped remaining sets for current exercise: {exercise['exercise_name']}")
+        return
 
     if action.action_type != "adjust_intensity":
-        return None
+        return
 
     safe_set_delta = _clamp_int(action.set_delta, MIN_SET_DELTA, MAX_SET_DELTA)
     safe_multiplier = max(MIN_REST_MULTIPLIER, min(MAX_REST_MULTIPLIER, action.rest_multiplier))
@@ -550,7 +716,6 @@ def _apply_adjustment_action(
     )
     if action.tempo_cue:
         state.tempo_cue = action.tempo_cue
-    state.demo_speed = _clamp_float(_resolve_demo_speed(state.tempo_cue), MIN_DEMO_SPEED, MAX_DEMO_SPEED)
 
     exercise_changes = []
     for idx, exercise in enumerate(state.workout_plan["exercises"]):
@@ -599,30 +764,24 @@ def _apply_adjustment_action(
             "phase": state.phase,
         },
     )
+    _emit_runtime_event(
+        io,
+        "adjustment_applied",
+        {
+            "set_delta": safe_set_delta,
+            "rest_multiplier": safe_multiplier,
+            "tempo_cue": state.tempo_cue,
+            "reason": action.reason,
+            "rule_id": action.rule_id,
+            "source_intent": source_intent,
+            "confidence": confidence,
+            "exercise_changes": exercise_changes,
+        },
+    )
     io.send(
         f"[Adjustment] next blocks updated: set_delta={safe_set_delta}, "
         f"rest_multiplier={safe_multiplier:.2f}, tempo={state.tempo_cue}"
     )
-    changes: List[str] = []
-    if safe_set_delta < 0:
-        changes.append(f"reduced upcoming sets by {abs(safe_set_delta)}")
-    elif safe_set_delta > 0:
-        changes.append(f"increased upcoming sets by {safe_set_delta}")
-
-    if safe_multiplier > 1.0:
-        changes.append(f"increased upcoming rest by {int(round((safe_multiplier - 1.0) * 100))}%")
-    elif safe_multiplier < 1.0:
-        changes.append(f"reduced upcoming rest by {int(round((1.0 - safe_multiplier) * 100))}%")
-
-    if action.tempo_cue == "slower":
-        changes.append("slowed the demo pace")
-    elif action.tempo_cue == "faster":
-        changes.append("sped up the demo pace")
-
-    if not changes:
-        return "I kept the plan structure but refreshed the upcoming pacing settings."
-
-    return "I " + ", ".join(changes) + "."
 
 
 def _handle_user_message(
@@ -637,43 +796,48 @@ def _handle_user_message(
     if not cleaned:
         return
 
+    _emit_runtime_event(
+        io,
+        "feedback_received",
+        {"text": cleaned, "phase": state.phase},
+    )
     state.conversation_log.append({"role": "user", "content": cleaned})
     state.log_event("user_message", {"content": cleaned})
 
     if state.awaiting_stop_confirmation:
-        lowered = cleaned.lower()
+        lowered = _normalize_confirmation_text(cleaned)
         if lowered in YES_WORDS:
             state.awaiting_stop_confirmation = False
             state.is_active = False
             state.end_reason = "user_requested_stop"
-            io.send("Stopping the workout now.")
+            io.send("好的，现在停止训练。")
             state.log_event("stop_confirmation", {"decision": "stop"})
             return
         if lowered in NO_WORDS:
             state.awaiting_stop_confirmation = False
-            io.send("Great, we continue. I can still lower intensity anytime.")
+            io.send("好的，我们继续。如果需要，我可以随时降低强度。")
             state.log_event("stop_confirmation", {"decision": "continue"})
             return
-        io.send("Please reply with 'yes' to stop or 'no' to continue.")
+        io.send("请回答“是”来停止，或回答“否”来继续。")
         state.log_event("stop_confirmation", {"decision": "unclear"})
         return
 
     if state.awaiting_pain_confirmation:
-        lowered = cleaned.lower()
+        lowered = _normalize_confirmation_text(cleaned)
         if lowered in YES_WORDS:
             state.awaiting_pain_confirmation = False
-            io.send("Great. We continue with a lighter safer pace.")
+            io.send("好的，我们用更轻、更安全的节奏继续。")
             state.log_event("pain_confirmation", {"decision": "continue"})
             return
         if lowered in NO_WORDS:
             state.awaiting_pain_confirmation = False
             state.is_active = False
             state.end_reason = "user_stopped_after_pain"
-            io.send("Session stopped. Please rest and seek medical advice if needed.")
+            io.send("训练已停止。请先休息，如果需要请及时寻求医疗建议。")
             state.log_event("pain_confirmation", {"decision": "stop"})
             return
 
-        io.send("Please reply with 'yes' to continue or 'no' to stop.")
+        io.send("请回答“继续”来继续训练，或回答“停止”来结束训练。")
         state.log_event("pain_confirmation", {"decision": "unclear"})
         return
 
@@ -684,7 +848,6 @@ def _handle_user_message(
         "current_set": state.current_set,
         "user_condition": state.user_condition.snapshot(),
         "tempo_cue": state.tempo_cue,
-        "demo_speed": state.demo_speed,
         "set_delta": state.set_delta,
         "rest_multiplier": state.rest_multiplier,
     }
@@ -710,31 +873,47 @@ def _handle_user_message(
         return
 
     condition_changed = _apply_condition_from_understanding(understanding, state)
+    _emit_runtime_event(
+        io,
+        "feedback_understood",
+        {
+            "intent": understanding.intent,
+            "fatigue_level": understanding.fatigue_level,
+            "difficulty_level": understanding.difficulty_level,
+            "preference": understanding.preference,
+            "confidence": understanding.confidence,
+            "reason": understanding.reason,
+            "raw_text": understanding.raw_text,
+            "condition_changed": condition_changed,
+        },
+    )
     decision = _build_decision_from_understanding(understanding, state, decision_engine)
     state.log_event("decision", {"intent": decision.intent})
-    io.send(f"[Coach] {decision.coach_reply}")
-    state.conversation_log.append({"role": "coach", "content": decision.coach_reply})
+    if decision.coach_reply:
+        io.send(f"[Coach] {decision.coach_reply}")
+        state.conversation_log.append({"role": "coach", "content": decision.coach_reply})
 
     state_actions: List[AdjustmentAction] = []
-    if condition_changed and decision.intent not in {"stop", "pain", "neutral", "unknown", "pace_up", "pace_down"}:
+    if condition_changed and decision.intent not in {
+        "stop",
+        "pain",
+        "neutral",
+        "unknown",
+        "pace_up",
+        "pace_down",
+        "preference_dislike",
+        "preference_like",
+    }:
         state_actions = _derive_state_actions(state)
 
-    coach_adjustment_summaries: List[str] = []
     for action in decision.actions + state_actions:
-        summary = _apply_adjustment_action(
+        _apply_adjustment_action(
             action,
             state,
             io,
             source_intent=understanding.intent,
             confidence=understanding.confidence,
         )
-        if summary:
-            coach_adjustment_summaries.append(summary)
-
-    if coach_adjustment_summaries:
-        combined_summary = " ".join(coach_adjustment_summaries)
-        io.send(f"[Coach] {combined_summary}")
-        state.conversation_log.append({"role": "coach", "content": combined_summary})
 
     if decision.requires_confirmation:
         if decision.confirmation_type == "pain":
@@ -749,12 +928,16 @@ def _drain_messages(
     decision_engine: DecisionEngine,
     feedback_understander: FeedbackUnderstander,
     feedback_model: str,
+    feedback_worker: Optional[FeedbackWorker] = None,
 ) -> None:
     while state.is_active:
         message = io.poll_user_input()
         if message is None:
             return
-        _handle_user_message(message, state, io, decision_engine, feedback_understander, feedback_model)
+        if feedback_worker is not None:
+            feedback_worker.submit(message)
+        else:
+            _handle_user_message(message, state, io, decision_engine, feedback_understander, feedback_model)
 
 
 def _run_timed_phase(
@@ -766,18 +949,44 @@ def _run_timed_phase(
     decision_engine: DecisionEngine,
     feedback_understander: FeedbackUnderstander,
     feedback_model: str,
+    feedback_worker: Optional[FeedbackWorker] = None,
 ) -> None:
     state.phase = phase
     state.seconds_remaining = seconds
+    _emit_runtime_event(
+        io,
+        "phase_start",
+        {
+            "phase": phase,
+            "seconds": seconds,
+            "current_round": state.current_round + 1,
+            "current_exercise": state.current_exercise + 1,
+            "current_set": state.current_set,
+        },
+    )
 
     while state.is_active and state.seconds_remaining > 0:
-        _drain_messages(state, io, decision_engine, feedback_understander, feedback_model)
+        _emit_runtime_event(
+            io,
+            "phase_tick",
+            {
+                "phase": phase,
+                "seconds_remaining": state.seconds_remaining,
+                "current_round": state.current_round + 1,
+                "current_exercise": state.current_exercise + 1,
+                "current_set": state.current_set,
+                "tempo_cue": state.tempo_cue,
+                "set_delta": state.set_delta,
+                "rest_multiplier": state.rest_multiplier,
+            },
+        )
+        _drain_messages(state, io, decision_engine, feedback_understander, feedback_model, feedback_worker)
         if not state.is_active:
             break
         clock.sleep(1)
         state.seconds_remaining -= 1
 
-    _drain_messages(state, io, decision_engine, feedback_understander, feedback_model)
+    _drain_messages(state, io, decision_engine, feedback_understander, feedback_model, feedback_worker)
 
 
 def _run_pre_exercise_preview_wait(
@@ -788,6 +997,7 @@ def _run_pre_exercise_preview_wait(
     decision_engine: DecisionEngine,
     feedback_understander: FeedbackUnderstander,
     feedback_model: str,
+    feedback_worker: Optional[FeedbackWorker] = None,
 ) -> None:
     if seconds <= 0:
         return
@@ -804,13 +1014,27 @@ def _run_pre_exercise_preview_wait(
     )
 
     while state.is_active and state.seconds_remaining > 0:
-        _drain_messages(state, io, decision_engine, feedback_understander, feedback_model)
+        _emit_runtime_event(
+            io,
+            "phase_tick",
+            {
+                "phase": state.phase,
+                "seconds_remaining": state.seconds_remaining,
+                "current_round": state.current_round + 1,
+                "current_exercise": state.current_exercise + 1,
+                "current_set": state.current_set,
+                "tempo_cue": state.tempo_cue,
+                "set_delta": state.set_delta,
+                "rest_multiplier": state.rest_multiplier,
+            },
+        )
+        _drain_messages(state, io, decision_engine, feedback_understander, feedback_model, feedback_worker)
         if not state.is_active:
             break
         clock.sleep(1)
         state.seconds_remaining -= 1
 
-    _drain_messages(state, io, decision_engine, feedback_understander, feedback_model)
+    _drain_messages(state, io, decision_engine, feedback_understander, feedback_model, feedback_worker)
     state.log_event(
         "pre_exercise_preview_wait_end",
         {
@@ -822,12 +1046,8 @@ def _run_pre_exercise_preview_wait(
 
 
 def _show_demo(io: ExecutorIO, exercise: Dict) -> None:
-    io.send("---------------------------")
     io.send(f"Exercise: {exercise['display_name']}")
-    io.send("Instructions:")
-    for step in exercise["instructions"]:
-        io.send(f" - {step}")
-    io.send("---------------------------")
+    io.send("Instructions: " + "; ".join(exercise["instructions"]))
 
 
 def export_session_log(state: SessionState, path: str) -> None:
@@ -850,8 +1070,6 @@ def export_session_log(state: SessionState, path: str) -> None:
             "current_exercise": state.current_exercise,
             "current_set": state.current_set,
             "phase": state.phase,
-            "tempo_cue": state.tempo_cue,
-            "demo_speed": state.demo_speed,
         },
         "initial_workout_plan": state.initial_workout_plan,
         "initial_intent": state.initial_intent,
@@ -887,6 +1105,7 @@ def run_adaptive_workout(
     runtime_clock = clock or RealClock()
     runtime_decision_engine = decision_engine or RuleFirstDecisionEngine()
     runtime_feedback_understander = feedback_understander or understand_feedback
+    feedback_worker: Optional[FeedbackWorker] = None
 
     translated_plan = translate_plan_for_demo(workout_plan)
     state = SessionState(
@@ -894,22 +1113,50 @@ def run_adaptive_workout(
         initial_workout_plan=deepcopy(translated_plan),
         initial_intent=deepcopy(initial_intent or {}),
         exercise_library=deepcopy(exercise_library or []),
-        demo_speed=_resolve_demo_speed("normal"),
     )
     state.log_event("session_start", {"timestamp": runtime_clock.now()})
+    _emit_runtime_event(
+        runtime_io,
+        "workout_started",
+        {"workout_plan": deepcopy(state.workout_plan), "initial_intent": deepcopy(state.initial_intent)},
+    )
+    if getattr(runtime_io, "nonblocking_feedback", False):
+        feedback_worker = FeedbackWorker(
+            state=state,
+            io=runtime_io,
+            decision_engine=runtime_decision_engine,
+            feedback_understander=runtime_feedback_understander,
+            feedback_model=feedback_model,
+        )
     try:
         rounds = state.workout_plan["rounds"]
         for round_idx in range(rounds):
             if not state.is_active:
                 break
             state.current_round = round_idx
-            runtime_io.send(f"\n===== ROUND {round_idx + 1}/{rounds} =====")
+            _emit_runtime_event(
+                runtime_io,
+                "round_start",
+                {"current_round": round_idx + 1, "total_rounds": rounds},
+            )
+            runtime_io.send(f"Round {round_idx + 1}/{rounds} start.")
 
             for ex_idx, exercise in enumerate(state.workout_plan["exercises"]):
                 if not state.is_active:
                     break
                 state.current_exercise = ex_idx
-                state.demo_speed = _clamp_float(_resolve_demo_speed(state.tempo_cue), MIN_DEMO_SPEED, MAX_DEMO_SPEED)
+                _emit_runtime_event(
+                    runtime_io,
+                    "exercise_start",
+                    {
+                        "exercise_index": ex_idx,
+                        "current_exercise": ex_idx + 1,
+                        "total_exercises": len(state.workout_plan["exercises"]),
+                        "exercise": deepcopy(exercise),
+                        "current_round": round_idx + 1,
+                        "total_rounds": rounds,
+                    },
+                )
                 _show_demo(runtime_io, exercise)
                 _run_pre_exercise_preview_wait(
                     seconds=PRE_EXERCISE_PREVIEW_WAIT_SECONDS,
@@ -919,6 +1166,7 @@ def run_adaptive_workout(
                     decision_engine=runtime_decision_engine,
                     feedback_understander=runtime_feedback_understander,
                     feedback_model=feedback_model,
+                    feedback_worker=feedback_worker,
                 )
                 if not state.is_active:
                     break
@@ -926,9 +1174,22 @@ def run_adaptive_workout(
                 set_index = 0
                 while state.is_active and set_index < exercise["total_sets"]:
                     state.current_set = set_index + 1
+                    _emit_runtime_event(
+                        runtime_io,
+                        "set_start",
+                        {
+                            "current_set": state.current_set,
+                            "total_sets": exercise["total_sets"],
+                            "exercise_index": ex_idx,
+                            "exercise_name": exercise["exercise_name"],
+                            "tempo_cue": state.tempo_cue,
+                            "current_round": round_idx + 1,
+                            "total_rounds": rounds,
+                        },
+                    )
                     runtime_io.send(
                         f"Set {state.current_set}/{exercise['total_sets']} start "
-                        f"(demo_speed: {state.demo_speed:.2f})"
+                        f"(tempo: {state.tempo_cue})"
                     )
                     _run_timed_phase(
                         seconds=exercise["avg_set_time"],
@@ -939,13 +1200,36 @@ def run_adaptive_workout(
                         decision_engine=runtime_decision_engine,
                         feedback_understander=runtime_feedback_understander,
                         feedback_model=feedback_model,
+                        feedback_worker=feedback_worker,
                     )
                     if not state.is_active:
                         break
+                    _emit_runtime_event(
+                        runtime_io,
+                        "set_end",
+                        {
+                            "current_set": state.current_set,
+                            "total_sets": exercise["total_sets"],
+                            "exercise_index": ex_idx,
+                            "exercise_name": exercise["exercise_name"],
+                        },
+                    )
                     runtime_io.send("Set finished.")
                     set_index += 1
 
                     if set_index < exercise["total_sets"]:
+                        _emit_runtime_event(
+                            runtime_io,
+                            "rest_start",
+                            {
+                                "rest_type": "between_sets",
+                                "seconds": exercise["rest_seconds"],
+                                "current_set": set_index,
+                                "total_sets": exercise["total_sets"],
+                                "exercise_index": ex_idx,
+                                "exercise_name": exercise["exercise_name"],
+                            },
+                        )
                         runtime_io.send(f"Rest for {exercise['rest_seconds']} seconds.")
                         _run_timed_phase(
                             seconds=exercise["rest_seconds"],
@@ -961,6 +1245,16 @@ def run_adaptive_workout(
             if state.is_active and round_idx < rounds - 1:
                 rest_between_rounds = state.workout_plan["rest_between_rounds"]
                 runtime_io.send("Round finished.")
+                _emit_runtime_event(
+                    runtime_io,
+                    "rest_start",
+                    {
+                        "rest_type": "between_rounds",
+                        "seconds": rest_between_rounds,
+                        "current_round": round_idx + 1,
+                        "total_rounds": rounds,
+                    },
+                )
                 runtime_io.send(f"Rest between rounds for {rest_between_rounds} seconds.")
                 _run_timed_phase(
                     seconds=rest_between_rounds,
@@ -971,20 +1265,29 @@ def run_adaptive_workout(
                     decision_engine=runtime_decision_engine,
                     feedback_understander=runtime_feedback_understander,
                     feedback_model=feedback_model,
+                    feedback_worker=feedback_worker,
                 )
+
+        if feedback_worker is not None:
+            feedback_worker.close()
+            feedback_worker = None
 
         if state.is_active:
             state.end_reason = "completed"
-            runtime_io.send("===== WORKOUT COMPLETE =====")
+            _emit_runtime_event(runtime_io, "session_end", {"reason": state.end_reason})
+            runtime_io.send("Workout complete.")
         else:
-            runtime_io.send(f"===== WORKOUT STOPPED: {state.end_reason} =====")
+            _emit_runtime_event(runtime_io, "session_end", {"reason": state.end_reason})
+            runtime_io.send(f"Workout stopped: {state.end_reason}.")
     finally:
+        if feedback_worker is not None:
+            feedback_worker.close()
         state.log_event("session_end", {"timestamp": runtime_clock.now(), "reason": state.end_reason})
         if log_path:
             export_session_log(state, log_path)
-            runtime_io.send(f"Session log saved to: {log_path}")
+            _emit_runtime_event(runtime_io, "log_saved", {"path": log_path})
+            runtime_io.send(f"Session log saved: {log_path}")
         runtime_io.close()
 
     return state
-
 

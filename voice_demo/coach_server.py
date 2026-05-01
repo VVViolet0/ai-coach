@@ -1,0 +1,514 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import queue
+import re
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional
+
+APP_DIR = Path(__file__).resolve().parent
+ROOT_DIR = APP_DIR.parent
+STATIC_DIR = APP_DIR / "static"
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+try:
+    import webrtcvad
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+except ModuleNotFoundError as exc:  # pragma: no cover
+    raise SystemExit(
+        "Missing voice demo dependency. Install with: "
+        "python -m pip install -r voice_demo/requirements.txt"
+    ) from exc
+
+try:
+    from .segmenter import FRAME_BYTES, SAMPLE_RATE, SpeechSegment, VadSegmenter
+    from .server import MockTranscriber, WhisperTranscriber
+except ImportError:  # pragma: no cover - supports `python voice_demo/coach_server.py`
+    from segmenter import FRAME_BYTES, SAMPLE_RATE, SpeechSegment, VadSegmenter
+    from server import MockTranscriber, WhisperTranscriber
+
+from ai_coach_system import AICoachSystem
+
+
+Publisher = Callable[[Dict[str, Any]], None]
+
+
+def _strip_coach_prefix(message: str) -> str:
+    return message.strip().replace("[Coach]", "").replace("[Adjustment]", "").strip()
+
+
+def _describe_adjustment(set_delta: int, rest_multiplier: float) -> str:
+    parts: list[str] = []
+    if set_delta < 0:
+        parts.append(f"减少 {abs(set_delta)} 组动作")
+    elif set_delta > 0:
+        parts.append(f"增加 {set_delta} 组动作")
+
+    if rest_multiplier > 1.02:
+        parts.append("延长休息时间")
+    elif rest_multiplier < 0.98:
+        parts.append("缩短休息时间")
+
+    if not parts:
+        parts.append("训练安排已更新")
+    return "，".join(parts)
+
+
+def classify_coach_message(message: str) -> Dict[str, Any]:
+    raw = message.strip()
+    compact = " ".join(raw.split())
+    if not compact:
+        return {"display": False, "speak": False, "message": raw, "speech_text": "", "category": "empty"}
+
+    if set(compact) <= {"-"} or compact.startswith("====="):
+        return {"display": False, "speak": False, "message": raw, "speech_text": "", "category": "separator"}
+
+    if compact.startswith("Session log saved"):
+        return {"display": False, "speak": False, "message": raw, "speech_text": "", "category": "log_saved"}
+
+    if "训练计划已生成" in compact and "\n" in raw:
+        return {
+            "display": False,
+            "speak": True,
+            "message": raw,
+            "speech_text": "训练计划已生成，准备开始。",
+            "category": "plan_ready",
+        }
+
+    if "正在为你生成训练计划" in compact:
+        return {
+            "display": True,
+            "speak": True,
+            "message": _strip_coach_prefix(compact),
+            "speech_text": "正在为你生成训练计划，请稍等。",
+            "category": "planning",
+        }
+
+    set_match = re.match(r"Set\s+(\d+)/(\d+)\s+start", compact, re.IGNORECASE)
+    if set_match:
+        current, total = set_match.groups()
+        return {
+            "display": False,
+            "speak": True,
+            "message": compact,
+            "speech_text": f"第 {current} 组开始，共 {total} 组。",
+            "category": "set_start",
+        }
+
+    rest_match = re.match(r"Rest for\s+(\d+)\s+seconds", compact, re.IGNORECASE)
+    if rest_match:
+        seconds = rest_match.group(1)
+        return {
+            "display": False,
+            "speak": True,
+            "message": compact,
+            "speech_text": f"休息 {seconds} 秒。",
+            "category": "rest_start",
+        }
+
+    if compact == "Set finished.":
+        return {"display": False, "speak": True, "message": compact, "speech_text": "本组完成。", "category": "set_end"}
+
+    if compact == "Round finished.":
+        return {"display": False, "speak": True, "message": compact, "speech_text": "本轮完成。", "category": "round_end"}
+
+    round_match = re.match(r"Round\s+(\d+)/(\d+)\s+start", compact, re.IGNORECASE)
+    if round_match:
+        current, total = round_match.groups()
+        return {
+            "display": False,
+            "speak": True,
+            "message": compact,
+            "speech_text": f"第 {current} 轮开始，共 {total} 轮。",
+            "category": "round_start",
+        }
+
+    if compact.startswith("Rest between rounds for"):
+        seconds = re.findall(r"\d+", compact)
+        speech = f"轮间休息 {seconds[0]} 秒。" if seconds else "轮间休息。"
+        return {"display": False, "speak": True, "message": compact, "speech_text": speech, "category": "rest_start"}
+
+    if "WORKOUT COMPLETE" in compact.upper():
+        return {"display": True, "speak": True, "message": "训练完成。", "speech_text": "训练完成。", "category": "session_end"}
+
+    if "WORKOUT STOPPED" in compact.upper():
+        return {"display": True, "speak": True, "message": compact, "speech_text": "训练已停止。", "category": "session_end"}
+
+    if compact.startswith("Exercise:") or compact.startswith("demo_speed:") or compact.startswith("Instructions:") or compact.startswith("- "):
+        return {"display": False, "speak": False, "message": compact, "speech_text": "", "category": "exercise_detail"}
+
+    if compact.startswith("[Adjustment]"):
+        set_match = re.search(r"set_delta=([-+]?\d+)", compact)
+        rest_match = re.search(r"rest_multiplier=([0-9.]+)", compact)
+        if set_match and rest_match:
+            speech_text = (
+                "强度调整，"
+                + _describe_adjustment(int(set_match.group(1)), float(rest_match.group(1)))
+                + "。"
+            )
+        elif "replaced exercise" in compact:
+            speech_text = "动作已根据反馈替换。"
+        else:
+            speech_text = "训练安排已根据反馈调整。"
+        return {
+            "display": True,
+            "speak": True,
+            "message": compact,
+            "speech_text": speech_text,
+            "category": "adjustment",
+        }
+
+    cleaned = _strip_coach_prefix(compact)
+    return {"display": True, "speak": True, "message": cleaned, "speech_text": cleaned, "category": "coach_reply"}
+
+
+class VoiceCoachIO:
+    def __init__(self, publish: Publisher) -> None:
+        self._publish = publish
+        self._messages: "queue.Queue[str]" = queue.Queue()
+        self._closed = False
+        self.nonblocking_feedback = True
+
+    def enqueue_user_text(self, text: str) -> None:
+        cleaned = text.strip()
+        if cleaned and not self._closed:
+            self._messages.put(cleaned)
+
+    def send(self, message: str) -> None:
+        if self._closed:
+            return
+        self._publish({"type": "coach_message", **classify_coach_message(message)})
+
+    def send_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+        if self._closed:
+            return
+        self._publish({"type": "runtime_event", "event_type": event_type, "payload": payload})
+
+    def poll_user_input(self) -> Optional[str]:
+        if self._closed:
+            return None
+        try:
+            return self._messages.get_nowait()
+        except queue.Empty:
+            return None
+
+    def close(self) -> None:
+        self._closed = True
+
+
+class CoachSession:
+    def __init__(self, websocket: WebSocket, config: "ServerConfig") -> None:
+        self.websocket = websocket
+        self.config = config
+        self.loop = asyncio.get_running_loop()
+        self.state = "idle"
+        self.io = VoiceCoachIO(self.publish_from_thread)
+        self.coach_thread: Optional[threading.Thread] = None
+        self.transcriber: Optional[WhisperTranscriber | MockTranscriber] = None
+        self._closed = False
+
+    async def publish(self, payload: Dict[str, Any]) -> None:
+        await self.websocket.send_text(json.dumps(payload, ensure_ascii=False))
+
+    def publish_from_thread(self, payload: Dict[str, Any]) -> None:
+        if self._closed:
+            return
+        if payload.get("type") == "runtime_event":
+            event_type = payload.get("event_type")
+            if self.state == "planning" and event_type in {"workout_started", "round_start", "exercise_start", "set_start"}:
+                self.set_state_from_thread("workout_running")
+        asyncio.run_coroutine_threadsafe(self.publish(payload), self.loop)
+
+    async def set_state(self, state: str) -> None:
+        self.state = state
+        await self.publish({"type": "session_state", "state": state})
+
+    def set_state_from_thread(self, state: str) -> None:
+        self.state = state
+        self.publish_from_thread({"type": "session_state", "state": state})
+
+    def get_transcriber(self) -> WhisperTranscriber | MockTranscriber:
+        if self.transcriber is None:
+            if self.config.asr_backend == "mock":
+                self.transcriber = MockTranscriber()
+            else:
+                self.transcriber = WhisperTranscriber(
+                    model_size=self.config.resolved_asr_model(),
+                    device=self.config.device,
+                    compute_type=self.config.compute_type,
+                    language=self.config.language,
+                    cpu_threads=self.config.cpu_threads,
+                    num_workers=self.config.num_workers,
+                )
+        return self.transcriber
+
+    async def transcribe_segment(self, segment: SpeechSegment) -> None:
+        total_start = time.perf_counter()
+        try:
+            result = await asyncio.to_thread(self.get_transcriber().transcribe, segment)
+            latency_ms = int((time.perf_counter() - total_start) * 1000)
+            text = result["text"].strip()
+            await self.publish(
+                {
+                    "type": "transcript_final",
+                    "text": text,
+                    "latency_ms": latency_ms,
+                    "asr_ms": result["asr_ms"],
+                    "segment_ms": segment.duration_ms,
+                    "language": result["language"],
+                    "language_probability": result["language_probability"],
+                }
+            )
+            await self.publish(
+                {
+                    "type": "metrics",
+                    "segment_ms": segment.duration_ms,
+                    "asr_ms": result["asr_ms"],
+                    "latency_ms": latency_ms,
+                }
+            )
+            if text:
+                await self.route_transcript(text)
+        except Exception as exc:
+            await self.set_state("error")
+            await self.publish({"type": "error", "message": str(exc)})
+
+    async def route_transcript(self, text: str) -> None:
+        if self.state == "idle":
+            await self.publish({"type": "user_transcript", "text": text, "target": "initial_intent"})
+            await self.set_state("planning")
+            self.start_coach(text)
+            return
+
+        if self.state in {"planning", "workout_running"}:
+            self.io.enqueue_user_text(text)
+            await self.publish({"type": "user_transcript", "text": text, "target": "feedback"})
+            return
+
+        await self.publish({"type": "user_transcript", "text": text, "target": "ignored"})
+
+    def start_coach(self, initial_request: str) -> None:
+        if self.coach_thread and self.coach_thread.is_alive():
+            return
+        self.coach_thread = threading.Thread(
+            target=self._run_coach_session,
+            args=(initial_request,),
+            daemon=True,
+        )
+        self.coach_thread.start()
+
+    def _run_coach_session(self, initial_request: str) -> None:
+        try:
+            system = AICoachSystem(
+                exercise_library_path=self.config.exercise_library,
+                output_dir=self.config.output_dir,
+                intent_model=self.config.intent_model,
+                planner_model=self.config.planner_model,
+            )
+            result = system.run_session(
+                initial_request,
+                io=self.io,
+                feedback_model=self.config.feedback_model,
+                execute_workout=True,
+            )
+            self.set_state_from_thread("ended")
+            self.publish_from_thread({"type": "session_summary", "result": result})
+        except Exception as exc:
+            self.set_state_from_thread("error")
+            self.publish_from_thread({"type": "error", "message": str(exc)})
+        finally:
+            self.io.close()
+
+    async def close(self) -> None:
+        self._closed = True
+        self.io.close()
+
+
+class ServerConfig:
+    def __init__(self) -> None:
+        self.asr_model = "base"
+        self.device = "auto"
+        self.compute_type = "auto"
+        self.language: Optional[str] = "zh"
+        self.cpu_threads = 1
+        self.num_workers = 1
+        self.asr_backend = "whisper"
+        self.exercise_library = "libraries/exercise_library.json"
+        self.output_dir = "data"
+        self.intent_model = "frob/qwen3.5-instruct:4b"
+        self.planner_model = "frob/qwen3.5-instruct:4b"
+        self.feedback_model = "frob/qwen3.5-instruct:4b"
+        self.vad_mode = 3
+        self.vad_silence_ms = 800
+        self.vad_min_speech_ms = 180
+        self.vad_start_trigger_ms = 100
+        self.vad_energy_threshold = 350.0
+
+    def resolved_asr_model(self) -> str:
+        return str(Path(self.asr_model).resolve()) if os.path.isdir(self.asr_model) else self.asr_model
+
+
+config = ServerConfig()
+app = FastAPI(title="Voice AI Coach")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/")
+async def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "coach.html")
+
+
+@app.websocket("/ws/audio")
+async def audio_websocket(websocket: WebSocket) -> None:
+    await websocket.accept()
+    session = CoachSession(websocket, config)
+    vad = webrtcvad.Vad(config.vad_mode)
+    segmenter = VadSegmenter(
+        vad=vad,
+        silence_ms=config.vad_silence_ms,
+        min_segment_ms=config.vad_min_speech_ms,
+        start_trigger_ms=config.vad_start_trigger_ms,
+        speech_energy_threshold=config.vad_energy_threshold,
+    )
+    muted = False
+    pending_tasks: set[asyncio.Task] = set()
+
+    await session.publish(
+        {
+            "type": "state_update",
+            "status": "connected",
+            "sample_rate": SAMPLE_RATE,
+            "frame_bytes": FRAME_BYTES,
+        }
+    )
+    await session.set_state("idle")
+
+    try:
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+
+            if "bytes" in message and message["bytes"] is not None:
+                if muted:
+                    continue
+                frame = message["bytes"]
+                if len(frame) != FRAME_BYTES:
+                    await session.publish(
+                        {
+                            "type": "error",
+                            "message": f"Invalid frame size: expected {FRAME_BYTES}, got {len(frame)}",
+                        }
+                    )
+                    continue
+
+                for event_type, segment in segmenter.process_frame(frame):
+                    if event_type == "vad_start":
+                        await session.publish({"type": "vad_start"})
+                    elif event_type == "vad_end":
+                        await session.publish(
+                            {
+                                "type": "vad_end",
+                                "segment_ms": segment.duration_ms if segment is not None else 0,
+                                "discarded": segment is None,
+                            }
+                        )
+                        if segment is None:
+                            continue
+                        task = asyncio.create_task(session.transcribe_segment(segment))
+                        pending_tasks.add(task)
+                        task.add_done_callback(pending_tasks.discard)
+
+            elif "text" in message and message["text"] is not None:
+                try:
+                    payload = json.loads(message["text"])
+                except json.JSONDecodeError:
+                    await session.publish({"type": "error", "message": "Invalid JSON control message"})
+                    continue
+
+                command = payload.get("type")
+                if command == "mute":
+                    muted = True
+                    segmenter.flush()
+                    await session.publish({"type": "state_update", "status": "muted"})
+                elif command == "unmute":
+                    muted = False
+                    segmenter.reset()
+                    await session.publish({"type": "state_update", "status": "listening"})
+                elif command == "stop":
+                    muted = True
+                    await session.publish({"type": "state_update", "status": "stopped"})
+                elif command == "start":
+                    muted = False
+                    segmenter.reset()
+                    await session.publish({"type": "state_update", "status": "listening"})
+                else:
+                    await session.publish({"type": "error", "message": f"Unknown command: {command}"})
+    except WebSocketDisconnect:
+        pass
+    except RuntimeError as exc:
+        if 'Cannot call "receive" once a disconnect message has been received' not in str(exc):
+            raise
+    finally:
+        await session.close()
+        for task in pending_tasks:
+            task.cancel()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the browser voice AI Coach.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8008)
+    parser.add_argument("--model", default="base", help="faster-whisper model size or local model directory")
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--compute-type", default="auto")
+    parser.add_argument("--language", default="zh")
+    parser.add_argument("--cpu-threads", type=int, default=1)
+    parser.add_argument("--num-workers", type=int, default=1)
+    parser.add_argument("--asr-backend", choices=["whisper", "mock"], default="whisper")
+    parser.add_argument("--exercise-library", default="libraries/exercise_library.json")
+    parser.add_argument("--output-dir", default="data")
+    parser.add_argument("--intent-model", default="frob/qwen3.5-instruct:4b")
+    parser.add_argument("--planner-model", default="frob/qwen3.5-instruct:4b")
+    parser.add_argument("--feedback-model", default="frob/qwen3.5-instruct:4b")
+    parser.add_argument("--vad-mode", type=int, default=3, choices=[0, 1, 2, 3])
+    parser.add_argument("--vad-silence-ms", type=int, default=800)
+    parser.add_argument("--vad-min-speech-ms", type=int, default=180)
+    parser.add_argument("--vad-start-trigger-ms", type=int, default=100)
+    parser.add_argument("--vad-energy-threshold", type=float, default=350.0)
+    args = parser.parse_args()
+
+    config.asr_model = args.model
+    config.device = args.device
+    config.compute_type = args.compute_type
+    config.language = args.language
+    config.cpu_threads = args.cpu_threads
+    config.num_workers = args.num_workers
+    config.asr_backend = args.asr_backend
+    config.exercise_library = args.exercise_library
+    config.output_dir = args.output_dir
+    config.intent_model = args.intent_model
+    config.planner_model = args.planner_model
+    config.feedback_model = args.feedback_model
+    config.vad_mode = args.vad_mode
+    config.vad_silence_ms = args.vad_silence_ms
+    config.vad_min_speech_ms = args.vad_min_speech_ms
+    config.vad_start_trigger_ms = args.vad_start_trigger_ms
+    config.vad_energy_threshold = args.vad_energy_threshold
+
+    import uvicorn
+
+    uvicorn.run(app, host=args.host, port=args.port)
+
+
+if __name__ == "__main__":
+    main()
