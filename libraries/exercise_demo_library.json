@@ -1,137 +1,137 @@
 {
   "push_up": {
-    "exercise_name": "Push Up",
+    "exercise_name": "俯卧撑",
     "instructions": [
-      "Place hands slightly wider than shoulders",
-      "Keep body straight",
-      "Lower chest toward the floor",
-      "Push back up"
+      "双手撑地，距离略宽于肩",
+      "身体从头到脚保持一条直线",
+      "弯曲手肘，控制身体缓慢下沉，感受胸部发力",
+      "双手推地回到起始位置，全程保持核心收紧"
     ]
   },
   "lunges": {
-    "exercise_name": "Lunges",
+    "exercise_name": "弓步蹲",
     "instructions": [
-      "Stand tall with feet hip-width apart",
-      "Step one leg forward",
-      "Lower both knees with control",
-      "Push through the front foot to return"
+      "身体站直，双脚与胯同宽",
+      "一侧腿向前迈出一步",
+      "双膝缓慢下蹲，前侧膝盖对准脚尖方向",
+      "前脚掌发力蹬地，站回起始位置"
     ]
   },
   "plank": {
-    "exercise_name": "Plank",
+    "exercise_name": "平板支撑",
     "instructions": [
-      "Place forearms on the floor",
-      "Keep shoulders stacked over elbows",
-      "Tighten core and squeeze glutes",
-      "Hold a straight line from head to heels"
+      "小臂撑地，手肘在肩膀正下方",
+      "肩膀、胯部和脚跟保持在一条直线上",
+      "收紧核心和臀部",
+      "保持身体呈一条直线，均匀呼吸"
     ]
   },
   "glute_bridge": {
-    "exercise_name": "Glute Bridge",
+    "exercise_name": "臀桥",
     "instructions": [
-      "Lie on your back with knees bent",
-      "Place feet flat on the floor",
-      "Drive hips upward by squeezing glutes",
-      "Lower slowly with control"
+      "仰卧屈膝，双脚平放在地面",
+      "双脚与胯同宽，脚跟靠近臀部",
+      "臀部发力向上顶起胯部",
+      "缓慢放下胯部，注意腰部不要悬空塌陷"
     ]
   },
   "mountain_climber": {
-    "exercise_name": "Mountain Climber",
+    "exercise_name": "登山跑",
     "instructions": [
-      "Start in a strong plank position",
-      "Drive one knee toward the chest",
-      "Switch legs quickly with control",
-      "Keep hips stable and core engaged"
+      "呈标准的直臂俯卧撑姿势",
+      "一侧膝盖向胸前提",
+      "左右腿交替提膝，动作保持平稳",
+      "尽量保持胯部不晃动，核心全程收紧"
     ]
   },
   "jumping_jacks": {
-    "exercise_name": "Jumping Jacks",
+    "exercise_name": "开合跳",
     "instructions": [
-      "Stand upright with feet together",
-      "Jump feet apart as arms rise overhead",
-      "Land softly with knees slightly bent",
-      "Return to the start rhythmically"
+      "站直，双脚并拢，双臂自然放在身体两侧",
+      "跳起时双脚向外打开，同时双手在头顶上方击掌或上举",
+      "落地时膝盖微屈，起到缓冲作用",
+      "有节奏地跳回起始姿势并重复"
     ]
   },
   "sit_up": {
-    "exercise_name": "Sit Up",
+    "exercise_name": "仰卧起坐",
     "instructions": [
-      "Lie on your back with knees bent",
-      "Brace your core before lifting",
-      "Curl the torso upward smoothly",
-      "Lower back down without dropping"
+      "仰卧屈膝，双脚踩实地面",
+      "起身前先收紧核心（肚子用力）",
+      "上半身平稳地卷起",
+      "缓慢躺回地面，不要直接砸向地板"
     ]
   },
   "wall_sit": {
-    "exercise_name": "Wall Sit",
+    "exercise_name": "靠墙静蹲",
     "instructions": [
-      "Stand with your back against the wall",
-      "Slide down until knees are near ninety degrees",
-      "Keep weight through the heels",
-      "Hold the position with steady breathing"
+      "背部贴紧墙面站立",
+      "顺着墙壁缓慢下蹲，直到大腿与小腿约呈90度",
+      "脚跟稳定踩地，膝盖对准脚尖方向",
+      "保持该姿势不动，均匀呼吸"
     ]
   },
   "high_knees": {
-    "exercise_name": "High Knees",
+    "exercise_name": "高抬腿",
     "instructions": [
-      "Stand tall and lift one knee high",
-      "Alternate legs quickly",
-      "Pump arms naturally for rhythm",
-      "Stay light on the balls of your feet"
+      "身体站直，收紧核心",
+      "一侧膝盖尽量向上抬高",
+      "左右腿快速交替提膝",
+      "手臂自然摆动，脚步保持轻盈有弹性"
     ]
   },
   "superman_hold": {
-    "exercise_name": "Superman Hold",
+    "exercise_name": "俯卧两头起",
     "instructions": [
-      "Lie face down with arms extended",
-      "Lift arms, chest, and legs slightly off the floor",
-      "Keep neck neutral and gaze downward",
-      "Hold the position with a tight back and core"
+      "俯卧，双臂向前伸直",
+      "微微抬起手臂、胸部和双腿",
+      "脖子放松，视线看向地面",
+      "收紧背部和核心，保持姿势稳定"
     ]
   },
   "reverse_snow_angel": {
-    "exercise_name": "Reverse Snow Angel",
+    "exercise_name": "俯卧手臂开合",
     "instructions": [
-      "Lie face down with arms by your sides",
-      "Lift chest slightly off the floor",
-      "Sweep arms overhead in a wide arc",
-      "Return slowly while squeezing the upper back"
+      "俯卧，双臂贴在身体两侧",
+      "微微抬起上半身",
+      "双臂沿身体两侧向头顶方向画弧打开",
+      "缓慢收回双臂，感受上背部的发力"
     ]
   },
   "tricep_dips": {
-    "exercise_name": "Tricep Dips",
+    "exercise_name": "肱三头肌臂屈伸",
     "instructions": [
-      "Place hands behind you on a stable surface",
-      "Slide hips forward off the edge",
-      "Bend elbows to lower with control",
-      "Press through palms to rise back up"
+      "双手撑在身后的稳固平面上",
+      "臀部向前移出支撑面边缘",
+      "弯曲手肘，控制身体缓慢下沉",
+      "手掌用力推起，回到起始位置"
     ]
   },
   "bird_dog": {
-    "exercise_name": "Bird Dog",
+    "exercise_name": "跪姿对侧伸展",
     "instructions": [
-      "Start on hands and knees",
-      "Extend one arm and the opposite leg",
-      "Keep hips level and core tight",
-      "Return slowly and switch sides"
+      "呈双手双膝着地的四足跪姿",
+      "同时向前伸出一侧手臂，向后伸直对侧腿",
+      "保持骨盆不晃动，核心收紧",
+      "缓慢收回后换另一侧重复"
     ]
   },
   "burpees": {
-    "exercise_name": "Burpees",
+    "exercise_name": "波比跳",
     "instructions": [
-      "Start standing with feet under hips",
-      "Drop hands to the floor and jump feet back",
-      "Return feet under the body",
-      "Stand or jump up explosively"
+      "站直，双脚与胯同宽",
+      "下蹲并用双手撑地",
+      "双脚向后跳，伸直身体呈直臂支撑姿势，再向前跳回蹲姿",
+      "向上跳起，落地时微屈膝盖缓冲"
     ]
   },
   "bodyweight_squat": {
-    "exercise_name": "Bodyweight Squat",
+    "exercise_name": "深蹲",
     "instructions": [
-      "Stand with feet shoulder-width apart",
-      "Push hips back",
-      "Lower until thighs parallel",
-      "Drive through heels to stand"
+      "双脚与肩同宽站立",
+      "臀部向后坐，核心收紧",
+      "下蹲直到大腿与地面基本平行",
+      "脚跟发力站起，膝盖对准脚尖方向"
     ]
   }
 }

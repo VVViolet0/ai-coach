@@ -132,6 +132,8 @@ def test_nonblocking_feedback_does_not_pause_phase_ticks():
             reason="test",
             raw_text=user_text,
             llm_channel="test",
+            actions=["decrease_difficulty"],
+            safety="none",
         )
 
     plan = tiny_plan()
@@ -147,6 +149,39 @@ def test_nonblocking_feedback_does_not_pause_phase_ticks():
     event_types = [event_type for event_type, _payload in io.events]
     assert "feedback_processing_start" in event_types
     assert "feedback_processing_end" in event_types
+
+
+def test_nonblocking_feedback_replaces_pending_normal_messages():
+    io = NonBlockingFeedbackIO()
+    processed = []
+
+    def slow_feedback_understander(user_text, state_snapshot, model):
+        import time
+        from feedback_understanding import FeedbackUnderstandingResult
+
+        processed.append(user_text)
+        time.sleep(0.05)
+        return FeedbackUnderstandingResult(
+            intent="neutral",
+            fatigue_level="medium",
+            difficulty_level="appropriate",
+            preference="neutral",
+            confidence=0.8,
+            reason="test",
+            raw_text=user_text,
+            llm_channel="test",
+            actions=["no_action"],
+            safety="none",
+        )
+
+    io.inputs = ["noise one", "noise two", "real feedback"]
+    plan = tiny_plan()
+    plan["exercises"][0]["avg_set_time"] = 2
+
+    run_adaptive_workout(plan, io=io, clock=FakeClock(), feedback_understander=slow_feedback_understander)
+
+    assert "noise two" not in processed
+    assert "real feedback" in processed
 
 
 def test_preference_dislike_skips_only_current_exercise_without_global_rest_change():
@@ -172,6 +207,8 @@ def test_preference_dislike_skips_only_current_exercise_without_global_rest_chan
             reason="preference_dislike",
             raw_text=user_text,
             llm_channel="test",
+            actions=["skip_current_exercise"],
+            safety="none",
         )
 
     plan = {
@@ -225,6 +262,8 @@ def test_preference_like_shorter_rest_reduces_rest_instead_of_medium_fatigue_rec
             reason="User requested shorter rest time.",
             raw_text=user_text,
             llm_channel="test",
+            actions=["decrease_rest"],
+            safety="none",
         )
 
     plan = {
@@ -245,10 +284,10 @@ def test_preference_like_shorter_rest_reduces_rest_instead_of_medium_fatigue_rec
 
     assert state.workout_plan["exercises"][0]["total_sets"] == 2
     assert state.workout_plan["exercises"][1]["total_sets"] == 2
-    assert state.workout_plan["exercises"][0]["rest_seconds"] == 9
-    assert state.workout_plan["exercises"][1]["rest_seconds"] == 9
-    assert state.adjustment_log[0]["rule_id"] == "preference_like_shorter_rest"
-    assert state.adjustment_log[0]["rest_multiplier"] == 0.85
+    assert state.workout_plan["exercises"][0]["rest_seconds"] == 8
+    assert state.workout_plan["exercises"][1]["rest_seconds"] == 8
+    assert state.adjustment_log[0]["rule_id"] == "action_decrease_rest"
+    assert state.adjustment_log[0]["rest_multiplier"] == 0.75
 
 
 def test_pain_confirmation_accepts_single_character_stop():

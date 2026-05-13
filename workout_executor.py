@@ -23,6 +23,20 @@ MIN_REST_MULTIPLIER = 0.5
 MAX_REST_MULTIPLIER = 2.0
 MIN_SET_DELTA = -3
 MAX_SET_DELTA = 3
+LOW_FEEDBACK_CONFIDENCE = 0.4
+PENDING_FEEDBACK_TTL_SECONDS = 8.0
+NO_STATE_DERIVED_ACTION_INTENTS = {
+    "stop",
+    "pain",
+    "neutral",
+    "unknown",
+    "pace_up",
+    "pace_down",
+    "preference_dislike",
+    "preference_like",
+}
+SILENT_NO_ACTION_INTENTS = {"unknown", "neutral"}
+NO_ACTIONS = {"ask_clarification", "no_action"}
 YES_WORDS = {
     "yes",
     "y",
@@ -64,6 +78,18 @@ NO_WORDS = {
 }
 CONFIRMATION_STRIP_CHARS = " \t\r\n,，.。!！?？;；:："
 EXERCISE_DEMO_LIBRARY_PATH = Path("libraries/exercise_demo_library.json")
+SAFETY_FEEDBACK_TERMS = (
+    "疼",
+    "痛",
+    "不舒服",
+    "停止",
+    "结束",
+    "停",
+    "stop",
+    "pain",
+    "hurt",
+    "quit",
+)
 
 
 class ExecutorIO(Protocol):
@@ -228,7 +254,7 @@ def translate_plan_for_demo(workout_plan: Dict) -> Dict:
             name,
             {
                 "exercise_name": name.replace("_", " ").title(),
-                "instructions": ["Follow safe and controlled movement."],
+                "instructions": ["保持动作安全、稳定、受控。"],
             },
         )
 
@@ -261,8 +287,8 @@ class RuleFirstDecisionEngine:
         return DecisionResult(
             intent="unknown",
             coach_reply=(
-                "I can adjust pace, reduce intensity, or stop. "
-                "Try messages like 'too hard', 'faster', or 'stop'."
+                "我可以调整节奏、降低强度或停止训练。"
+                "你可以说“太难了”“快一点”或“停止”。"
             ),
         )
 
@@ -281,12 +307,30 @@ class FeedbackWorker:
         self._decision_engine = decision_engine
         self._feedback_understander = feedback_understander
         self._feedback_model = feedback_model
-        self._messages: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._messages: "queue.Queue[Optional[Tuple[str, float]]]" = queue.Queue()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def submit(self, message: str) -> None:
-        self._messages.put(message)
+        if not _is_safety_feedback_text(message):
+            self._drop_pending_normal_feedback()
+        self._messages.put((message, time.time()))
+
+    def _drop_pending_normal_feedback(self) -> None:
+        kept: List[Tuple[str, float]] = []
+        while True:
+            try:
+                item = self._messages.get_nowait()
+            except queue.Empty:
+                break
+            if item is None:
+                kept.append(item)
+                continue
+            message, submitted_at = item
+            if _is_safety_feedback_text(message):
+                kept.append((message, submitted_at))
+        for item in kept:
+            self._messages.put(item)
 
     def close(self) -> None:
         self._messages.put(None)
@@ -294,9 +338,22 @@ class FeedbackWorker:
 
     def _run(self) -> None:
         while True:
-            message = self._messages.get()
-            if message is None:
+            item = self._messages.get()
+            if item is None:
                 return
+            message, submitted_at = item
+            if time.time() - submitted_at > PENDING_FEEDBACK_TTL_SECONDS and not _is_safety_feedback_text(message):
+                _emit_runtime_event(
+                    self._io,
+                    "feedback_ignored",
+                    {
+                        "raw_text": message,
+                        "intent": "unknown",
+                        "confidence": 0.0,
+                        "reason": "stale_pending_feedback",
+                    },
+                )
+                continue
             _emit_runtime_event(self._io, "feedback_processing_start", {"text": message})
             _handle_user_message(
                 message,
@@ -317,24 +374,9 @@ def _normalize_confirmation_text(text: str) -> str:
     return text.strip().lower().strip(CONFIRMATION_STRIP_CHARS)
 
 
-def _is_shorter_rest_request(understanding: FeedbackUnderstandingResult) -> bool:
-    text = f"{understanding.raw_text} {understanding.reason}".lower()
-    rest_terms = ("休息", "rest", "recovery", "break")
-    shorter_terms = (
-        "短",
-        "少",
-        "缩短",
-        "減少",
-        "减少",
-        "快一点",
-        "快一點",
-        "shorter",
-        "less",
-        "reduce",
-        "decrease",
-        "cut",
-    )
-    return any(term in text for term in rest_terms) and any(term in text for term in shorter_terms)
+def _is_safety_feedback_text(text: str) -> bool:
+    lowered = text.strip().lower()
+    return any(term in lowered for term in SAFETY_FEEDBACK_TERMS)
 
 
 def _emit_runtime_event(io: ExecutorIO, event_type: str, payload: Dict) -> None:
@@ -343,20 +385,137 @@ def _emit_runtime_event(io: ExecutorIO, event_type: str, payload: Dict) -> None:
         send_event(event_type, payload)
 
 
+def _log_feedback_ignored(
+    state: SessionState,
+    io: ExecutorIO,
+    raw_text: str,
+    intent: str,
+    confidence: float,
+    reason: str,
+) -> None:
+    detail = {
+        "raw_text": raw_text,
+        "intent": intent,
+        "confidence": confidence,
+        "reason": reason,
+    }
+    state.log_event("feedback_ignored", detail)
+    _emit_runtime_event(io, "feedback_ignored", detail)
+
+
+def _log_feedback_understanding_failure(
+    state: SessionState,
+    io: ExecutorIO,
+    raw_text: str,
+    feedback_model: str,
+    failure: Optional[FeedbackUnderstandingFailure],
+) -> None:
+    detail = {
+        "raw_text": raw_text,
+        "model": feedback_model,
+        "error_summary": failure.error_summary if failure else "understander returned None",
+        "tried_channels": failure.tried_channels if failure else [],
+    }
+    state.log_event("feedback_understanding_failed", detail)
+    _emit_runtime_event(io, "feedback_understanding_failed", detail)
+
+
+def _build_feedback_state_snapshot(state: SessionState) -> Dict:
+    current_exercise_name = ""
+    if state.workout_plan.get("exercises") and state.current_exercise < len(state.workout_plan["exercises"]):
+        current = state.workout_plan["exercises"][state.current_exercise]
+        current_exercise_name = current.get("exercise_name") or current.get("exercise", "")
+
+    return {
+        "phase": state.phase,
+        "current_exercise_name": current_exercise_name,
+        "user_condition": {
+            "fatigue_level": state.user_condition.fatigue_level,
+            "difficulty_level": state.user_condition.difficulty_level,
+            "preference": state.user_condition.preference,
+        },
+        "tempo_cue": state.tempo_cue,
+        "set_delta": state.set_delta,
+        "rest_multiplier": state.rest_multiplier,
+    }
+
+
+def _send_coach_reply(io: ExecutorIO, state: SessionState, reply: str) -> None:
+    if not reply:
+        return
+    io.send(f"[Coach] {reply}")
+    state.conversation_log.append({"role": "coach", "content": reply})
+
+
+def _handle_stop_confirmation(cleaned: str, state: SessionState, io: ExecutorIO) -> bool:
+    lowered = _normalize_confirmation_text(cleaned)
+    if lowered in YES_WORDS:
+        state.awaiting_stop_confirmation = False
+        state.is_active = False
+        state.end_reason = "user_requested_stop"
+        io.send("好的，现在停止训练。")
+        state.log_event("stop_confirmation", {"decision": "stop"})
+        return True
+    if lowered in NO_WORDS:
+        state.awaiting_stop_confirmation = False
+        io.send("好的，我们继续。如果需要，我可以随时降低强度。")
+        state.log_event("stop_confirmation", {"decision": "continue"})
+        return True
+
+    io.send("请回答“是”来停止，或回答“否”来继续。")
+    state.log_event("stop_confirmation", {"decision": "unclear"})
+    return True
+
+
+def _handle_pain_confirmation(cleaned: str, state: SessionState, io: ExecutorIO) -> bool:
+    lowered = _normalize_confirmation_text(cleaned)
+    if lowered in YES_WORDS:
+        state.awaiting_pain_confirmation = False
+        io.send("好的，我们用更轻、更安全的节奏继续。")
+        state.log_event("pain_confirmation", {"decision": "continue"})
+        return True
+    if lowered in NO_WORDS:
+        state.awaiting_pain_confirmation = False
+        state.is_active = False
+        state.end_reason = "user_stopped_after_pain"
+        io.send("训练已停止。请先休息，如果需要请及时寻求医疗建议。")
+        state.log_event("pain_confirmation", {"decision": "stop"})
+        return True
+
+    io.send("请回答“继续”来继续训练，或回答“停止”来结束训练。")
+    state.log_event("pain_confirmation", {"decision": "unclear"})
+    return True
+
+
 def _apply_condition_from_understanding(
     understanding: FeedbackUnderstandingResult,
     state: SessionState,
 ) -> bool:
     before = state.user_condition.snapshot()
+    fatigue_level = (
+        understanding.fatigue_level
+        if understanding.fatigue_level in {"low", "medium", "high"}
+        else state.user_condition.fatigue_level
+    )
+    difficulty_level = (
+        understanding.difficulty_level
+        if understanding.difficulty_level in {"easy", "appropriate", "hard"}
+        else state.user_condition.difficulty_level
+    )
+    preference = (
+        understanding.preference
+        if understanding.preference in {"like", "neutral", "dislike"}
+        else state.user_condition.preference
+    )
     changed = (
-        state.user_condition.fatigue_level != understanding.fatigue_level
-        or state.user_condition.difficulty_level != understanding.difficulty_level
-        or state.user_condition.preference != understanding.preference
+        state.user_condition.fatigue_level != fatigue_level
+        or state.user_condition.difficulty_level != difficulty_level
+        or state.user_condition.preference != preference
     )
 
-    state.user_condition.fatigue_level = understanding.fatigue_level
-    state.user_condition.difficulty_level = understanding.difficulty_level
-    state.user_condition.preference = understanding.preference
+    state.user_condition.fatigue_level = fatigue_level
+    state.user_condition.difficulty_level = difficulty_level
+    state.user_condition.preference = preference
     state.user_condition.last_feedback_text = understanding.raw_text
     state.user_condition.updated_at_phase = state.phase
 
@@ -365,6 +524,8 @@ def _apply_condition_from_understanding(
         "after_state": state.user_condition.snapshot(),
         "trigger_text": understanding.raw_text,
         "llm_intent": understanding.intent,
+        "llm_actions": understanding.actions,
+        "llm_safety": understanding.safety,
         "confidence": understanding.confidence,
         "reason": understanding.reason,
         "llm_channel": understanding.llm_channel,
@@ -375,27 +536,151 @@ def _apply_condition_from_understanding(
     return changed
 
 
-def _build_decision_from_understanding(
+def _action_to_adjustment(
+    action: str,
+    state: SessionState,
+    understanding: FeedbackUnderstandingResult,
+) -> Optional[AdjustmentAction]:
+    reason = understanding.reason or action
+
+    if action == "decrease_rest":
+        return AdjustmentAction(
+            action_type="adjust_intensity",
+            rest_multiplier=0.75,
+            reason=reason,
+            rule_id="action_decrease_rest",
+            state_reason="llm_action=decrease_rest",
+        )
+
+    if action == "increase_rest":
+        return AdjustmentAction(
+            action_type="adjust_intensity",
+            rest_multiplier=1.25,
+            reason=reason,
+            rule_id="action_increase_rest",
+            state_reason="llm_action=increase_rest",
+        )
+
+    if action == "decrease_sets":
+        return AdjustmentAction(
+            action_type="adjust_intensity",
+            set_delta=-1,
+            reason=reason,
+            rule_id="action_decrease_sets",
+            state_reason="llm_action=decrease_sets",
+        )
+
+    if action == "increase_sets":
+        return AdjustmentAction(
+            action_type="adjust_intensity",
+            set_delta=1,
+            reason=reason,
+            rule_id="action_increase_sets",
+            state_reason="llm_action=increase_sets",
+        )
+
+    if action == "slow_tempo":
+        return AdjustmentAction(
+            action_type="adjust_intensity",
+            tempo_cue="slower",
+            reason=reason,
+            rule_id="action_slow_tempo",
+            state_reason="llm_action=slow_tempo",
+        )
+
+    if action == "speed_up_tempo":
+        return AdjustmentAction(
+            action_type="adjust_intensity",
+            tempo_cue="faster",
+            reason=reason,
+            rule_id="action_speed_up_tempo",
+            state_reason="llm_action=speed_up_tempo",
+        )
+
+    if action == "decrease_difficulty":
+        return AdjustmentAction(
+            action_type="adjust_intensity",
+            set_delta=-1,
+            rest_multiplier=1.25,
+            tempo_cue="slower",
+            reason=reason,
+            rule_id="action_decrease_difficulty",
+            state_reason="llm_action=decrease_difficulty",
+        )
+
+    if action == "increase_difficulty":
+        return AdjustmentAction(
+            action_type="adjust_intensity",
+            set_delta=1,
+            rest_multiplier=0.85,
+            tempo_cue="faster",
+            reason=reason,
+            rule_id="action_increase_difficulty",
+            state_reason="llm_action=increase_difficulty",
+        )
+
+    if action == "skip_current_exercise":
+        return AdjustmentAction(
+            action_type="skip_current_exercise",
+            reason=reason,
+            rule_id="action_skip_current_exercise",
+            state_reason="llm_action=skip_current_exercise",
+        )
+
+    if action == "replace_current_exercise":
+        return AdjustmentAction(
+            action_type="replace_exercise",
+            replacement_exercise=_find_replacement_exercise(state),
+            reason=reason,
+            rule_id="action_replace_current_exercise",
+            state_reason="llm_action=replace_current_exercise",
+        )
+
+    if action == "stop_workout":
+        return AdjustmentAction(
+            action_type="stop",
+            reason="user_requested_stop",
+            rule_id="action_stop_workout",
+            state_reason="llm_action=stop_workout",
+        )
+
+    return None
+
+
+def _legacy_actions_from_intent(understanding: FeedbackUnderstandingResult) -> List[str]:
+    if understanding.actions != ["no_action"]:
+        return understanding.actions
+
+    legacy_map = {
+        "stop": ["stop_workout"],
+        "pain": ["decrease_difficulty"],
+        "fatigue": ["decrease_difficulty"],
+        "pace_up": ["decrease_rest", "speed_up_tempo"],
+        "pace_down": ["increase_rest", "slow_tempo"],
+        "preference_dislike": ["skip_current_exercise"],
+    }
+    return legacy_map.get(understanding.intent, understanding.actions)
+
+
+def _build_decision_from_actions(
     understanding: FeedbackUnderstandingResult,
     state: SessionState,
     decision_engine: DecisionEngine,
 ) -> DecisionResult:
-    if understanding.intent == "stop":
+    actions = _legacy_actions_from_intent(understanding)
+
+    if understanding.safety == "stop_request" or "stop_workout" in actions:
         return DecisionResult(
             intent="stop",
-            coach_reply=(
-                "我听到你可能想停止训练。现在要停止吗？请回答“是”或“否”。"
-            ),
+            coach_reply=understanding.reply or "我听到你可能想停止训练。现在要停止吗？请回答“是”或“否”。",
             requires_confirmation=True,
             confirmation_type="stop",
         )
 
-    if understanding.intent == "pain":
+    if understanding.safety == "pain":
         return DecisionResult(
             intent="pain",
-            coach_reply=(
-                "我听到你有疼痛或不适。我已经降低强度。你还要继续吗？请回答“继续”或“停止”。"
-            ),
+            coach_reply=understanding.reply or "我听到你有疼痛或不适。我已经降低强度。你还要继续吗？请回答“继续”或“停止”。",
             actions=[
                 AdjustmentAction(
                     action_type="adjust_intensity",
@@ -411,78 +696,34 @@ def _build_decision_from_understanding(
             confirmation_type="pain",
         )
 
-    if understanding.intent == "pace_up":
-        return DecisionResult(
-            intent="pace_up",
-            coach_reply="Great. I will shorten upcoming rest and keep cues brisk.",
-            actions=[
-                AdjustmentAction(
-                    action_type="adjust_intensity",
-                    set_delta=0,
-                    rest_multiplier=0.85,
-                    tempo_cue="faster",
-                    reason="pace_up",
-                    rule_id="pace_up_direct",
-                    state_reason="llm_intent=pace_up",
-                )
-            ],
-        )
-
-    if understanding.intent == "preference_like" and _is_shorter_rest_request(understanding):
-        return DecisionResult(
-            intent="pace_up",
-            coach_reply="Got it. I will shorten upcoming rest a little.",
-            actions=[
-                AdjustmentAction(
-                    action_type="adjust_intensity",
-                    set_delta=0,
-                    rest_multiplier=0.85,
-                    tempo_cue="faster",
-                    reason="preference_like_shorter_rest",
-                    rule_id="preference_like_shorter_rest",
-                    state_reason="preference_like with shorter-rest request",
-                )
-            ],
-        )
-
-    if understanding.intent == "pace_down":
-        return DecisionResult(
-            intent="pace_down",
-            coach_reply="No problem. I will slow the pace and extend recovery.",
-            actions=[
-                AdjustmentAction(
-                    action_type="adjust_intensity",
-                    set_delta=0,
-                    rest_multiplier=1.15,
-                    tempo_cue="slower",
-                    reason="pace_down",
-                    rule_id="pace_down_direct",
-                    state_reason="llm_intent=pace_down",
-                )
-            ],
-        )
-
-    if understanding.intent == "preference_dislike":
-        return DecisionResult(
-            intent="preference_dislike",
-            coach_reply="Got it. I will skip this exercise and move to the next one.",
-            actions=[
-                AdjustmentAction(
-                    action_type="skip_current_exercise",
-                    reason="preference_dislike_skip_current",
-                    rule_id="preference_dislike_skip_current",
-                    state_reason="llm_intent=preference_dislike",
-                )
-            ],
-        )
-
-    if understanding.intent in {"fatigue", "preference_dislike", "preference_like"}:
+    if any(action in NO_ACTIONS for action in actions):
+        if (
+            actions == ["no_action"]
+            and decision_engine is not None
+            and getattr(decision_engine, "_fallback_parser", None) is not None
+        ):
+            fallback = decision_engine.decide(understanding.raw_text, state)
+            if fallback.intent != "unknown":
+                return fallback
         return DecisionResult(
             intent=understanding.intent,
-            coach_reply="",
+            coach_reply=understanding.reply,
         )
 
-    fallback = decision_engine.decide(understanding.raw_text, state)
+    mapped_actions = []
+    for action in actions:
+        adjustment = _action_to_adjustment(action, state, understanding)
+        if adjustment is not None:
+            mapped_actions.append(adjustment)
+
+    if mapped_actions:
+        return DecisionResult(
+            intent=understanding.intent,
+            coach_reply=understanding.reply,
+            actions=mapped_actions,
+        )
+
+    fallback = decision_engine.decide(understanding.raw_text, state) if decision_engine is not None else DecisionResult("unknown", "")
     if fallback.intent != "unknown":
         return fallback
 
@@ -581,6 +822,7 @@ def _apply_adjustment_action(
     io: ExecutorIO,
     source_intent: str = "",
     confidence: float = 0.0,
+    source_actions: Optional[List[str]] = None,
 ) -> None:
     if action.action_type == "stop":
         state.is_active = False
@@ -604,7 +846,7 @@ def _apply_adjustment_action(
             target_name,
             {
                 "exercise_name": target_name.replace("_", " ").title(),
-                "instructions": ["Follow safe and controlled movement."],
+                "instructions": ["保持动作安全、稳定、受控。"],
             },
         )
         exercise["exercise_name"] = target_name
@@ -619,6 +861,7 @@ def _apply_adjustment_action(
                 "rule_id": action.rule_id,
                 "state_reason": action.state_reason,
                 "source_intent": source_intent,
+                "source_actions": source_actions or [],
                 "confidence": confidence,
                 "replacement": {"before": before_name, "after": target_name},
             }
@@ -667,6 +910,7 @@ def _apply_adjustment_action(
                 "rule_id": action.rule_id,
                 "state_reason": action.state_reason,
                 "source_intent": source_intent,
+                "source_actions": source_actions or [],
                 "confidence": confidence,
                 "exercise_change": {
                     "exercise_index": state.current_exercise,
@@ -751,6 +995,7 @@ def _apply_adjustment_action(
             "rule_id": action.rule_id,
             "state_reason": action.state_reason,
             "source_intent": source_intent,
+            "source_actions": source_actions or [],
             "confidence": confidence,
             "exercise_changes": exercise_changes,
         }
@@ -774,6 +1019,7 @@ def _apply_adjustment_action(
             "reason": action.reason,
             "rule_id": action.rule_id,
             "source_intent": source_intent,
+            "source_actions": source_actions or [],
             "confidence": confidence,
             "exercise_changes": exercise_changes,
         },
@@ -805,70 +1051,28 @@ def _handle_user_message(
     state.log_event("user_message", {"content": cleaned})
 
     if state.awaiting_stop_confirmation:
-        lowered = _normalize_confirmation_text(cleaned)
-        if lowered in YES_WORDS:
-            state.awaiting_stop_confirmation = False
-            state.is_active = False
-            state.end_reason = "user_requested_stop"
-            io.send("好的，现在停止训练。")
-            state.log_event("stop_confirmation", {"decision": "stop"})
-            return
-        if lowered in NO_WORDS:
-            state.awaiting_stop_confirmation = False
-            io.send("好的，我们继续。如果需要，我可以随时降低强度。")
-            state.log_event("stop_confirmation", {"decision": "continue"})
-            return
-        io.send("请回答“是”来停止，或回答“否”来继续。")
-        state.log_event("stop_confirmation", {"decision": "unclear"})
+        _handle_stop_confirmation(cleaned, state, io)
         return
 
     if state.awaiting_pain_confirmation:
-        lowered = _normalize_confirmation_text(cleaned)
-        if lowered in YES_WORDS:
-            state.awaiting_pain_confirmation = False
-            io.send("好的，我们用更轻、更安全的节奏继续。")
-            state.log_event("pain_confirmation", {"decision": "continue"})
-            return
-        if lowered in NO_WORDS:
-            state.awaiting_pain_confirmation = False
-            state.is_active = False
-            state.end_reason = "user_stopped_after_pain"
-            io.send("训练已停止。请先休息，如果需要请及时寻求医疗建议。")
-            state.log_event("pain_confirmation", {"decision": "stop"})
-            return
-
-        io.send("请回答“继续”来继续训练，或回答“停止”来结束训练。")
-        state.log_event("pain_confirmation", {"decision": "unclear"})
+        _handle_pain_confirmation(cleaned, state, io)
         return
 
-    state_snapshot = {
-        "phase": state.phase,
-        "current_round": state.current_round,
-        "current_exercise": state.current_exercise,
-        "current_set": state.current_set,
-        "user_condition": state.user_condition.snapshot(),
-        "tempo_cue": state.tempo_cue,
-        "set_delta": state.set_delta,
-        "rest_multiplier": state.rest_multiplier,
-    }
-    understanding = feedback_understander(cleaned, state_snapshot, model=feedback_model)
+    understanding = feedback_understander(cleaned, _build_feedback_state_snapshot(state), model=feedback_model)
 
     if understanding is None or isinstance(understanding, FeedbackUnderstandingFailure):
-        failure_detail = {
-            "raw_text": cleaned,
-            "model": feedback_model,
-        }
-        if isinstance(understanding, FeedbackUnderstandingFailure):
-            failure_detail["error_summary"] = understanding.error_summary
-            failure_detail["tried_channels"] = understanding.tried_channels
-        else:
-            failure_detail["error_summary"] = "understander returned None"
-            failure_detail["tried_channels"] = []
+        failure = understanding if isinstance(understanding, FeedbackUnderstandingFailure) else None
+        _log_feedback_understanding_failure(state, io, cleaned, feedback_model, failure)
+        return
 
-        state.log_event("feedback_understanding_failed", failure_detail)
-        io.send("[Coach] I could not parse that feedback this time. We'll continue and keep monitoring.")
-        state.conversation_log.append(
-            {"role": "coach", "content": "I could not parse that feedback this time."}
+    if understanding.confidence <= LOW_FEEDBACK_CONFIDENCE:
+        _log_feedback_ignored(
+            state,
+            io,
+            cleaned,
+            understanding.intent,
+            understanding.confidence,
+            "low_confidence",
         )
         return
 
@@ -881,38 +1085,44 @@ def _handle_user_message(
             "fatigue_level": understanding.fatigue_level,
             "difficulty_level": understanding.difficulty_level,
             "preference": understanding.preference,
+            "actions": understanding.actions,
+            "safety": understanding.safety,
             "confidence": understanding.confidence,
             "reason": understanding.reason,
             "raw_text": understanding.raw_text,
             "condition_changed": condition_changed,
         },
     )
-    decision = _build_decision_from_understanding(understanding, state, decision_engine)
+    decision = _build_decision_from_actions(understanding, state, decision_engine)
     state.log_event("decision", {"intent": decision.intent})
-    if decision.coach_reply:
-        io.send(f"[Coach] {decision.coach_reply}")
-        state.conversation_log.append({"role": "coach", "content": decision.coach_reply})
 
-    state_actions: List[AdjustmentAction] = []
-    if condition_changed and decision.intent not in {
-        "stop",
-        "pain",
-        "neutral",
-        "unknown",
-        "pace_up",
-        "pace_down",
-        "preference_dislike",
-        "preference_like",
-    }:
-        state_actions = _derive_state_actions(state)
+    all_actions = decision.actions
+    if (
+        decision.intent in SILENT_NO_ACTION_INTENTS
+        and not all_actions
+        and not decision.requires_confirmation
+        and not decision.coach_reply
+    ):
+        _log_feedback_ignored(
+            state,
+            io,
+            cleaned,
+            decision.intent,
+            understanding.confidence,
+            "no_applicable_adjustment",
+        )
+        return
 
-    for action in decision.actions + state_actions:
+    _send_coach_reply(io, state, decision.coach_reply)
+
+    for action in all_actions:
         _apply_adjustment_action(
             action,
             state,
             io,
             source_intent=understanding.intent,
             confidence=understanding.confidence,
+            source_actions=understanding.actions,
         )
 
     if decision.requires_confirmation:
@@ -1046,8 +1256,13 @@ def _run_pre_exercise_preview_wait(
 
 
 def _show_demo(io: ExecutorIO, exercise: Dict) -> None:
-    io.send(f"Exercise: {exercise['display_name']}")
-    io.send("Instructions: " + "; ".join(exercise["instructions"]))
+    io.send(
+        f"Exercise: {exercise['display_name']}\n"
+        "Instructions: " + "; ".join(exercise["instructions"])
+    )
+    wait_for_speech = getattr(io, "wait_for_speech", None)
+    if callable(wait_for_speech):
+        wait_for_speech("exercise_instructions")
 
 
 def export_session_log(state: SessionState, path: str) -> None:

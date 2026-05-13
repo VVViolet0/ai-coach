@@ -40,10 +40,122 @@ from ai_coach_system import AICoachSystem
 
 
 Publisher = Callable[[Dict[str, Any]], None]
+INITIAL_PLANNING_SPEECH = "收到您的训练需求，正在为您生成训练计划。与此同时您可以进行一些热身。"
+CHINESE_ORDER_MARKERS = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
+FEEDBACK_KEYWORDS = {
+    "休息",
+    "太长",
+    "太短",
+    "短一点",
+    "长一点",
+    "快",
+    "慢",
+    "累",
+    "疲劳",
+    "疼",
+    "痛",
+    "不舒服",
+    "难",
+    "简单",
+    "轻松",
+    "动作",
+    "换",
+    "跳过",
+    "不想",
+    "停止",
+    "结束",
+    "继续",
+    "stop",
+    "pain",
+    "hurt",
+    "tired",
+    "rest",
+    "faster",
+    "slower",
+    "hard",
+    "easy",
+    "skip",
+}
+SAFETY_KEYWORDS = {"疼", "痛", "不舒服", "停止", "结束", "停", "stop", "pain", "hurt", "quit"}
+COMMON_ASR_HALLUCINATIONS = {
+    "谢谢观看",
+    "感谢观看",
+    "欢迎收看",
+    "我认为你会不会有什么事",
+}
+
+
+def _coach_message(
+    *,
+    display: bool,
+    speak: bool,
+    message: str,
+    speech_text: str = "",
+    category: str,
+) -> Dict[str, Any]:
+    return {
+        "display": display,
+        "speak": speak,
+        "message": message,
+        "speech_text": speech_text,
+        "category": category,
+    }
+
+
+def _initial_planning_message() -> Dict[str, Any]:
+    return {
+        "type": "coach_message",
+        **_coach_message(
+            display=True,
+            speak=True,
+            message=INITIAL_PLANNING_SPEECH,
+            speech_text=INITIAL_PLANNING_SPEECH,
+            category="initial_planning",
+        ),
+    }
 
 
 def _strip_coach_prefix(message: str) -> str:
     return message.strip().replace("[Coach]", "").replace("[Adjustment]", "").strip()
+
+
+def _compact_text(text: str) -> str:
+    return re.sub(r"\s+", "", text.strip().lower())
+
+
+def _has_safety_keyword(text: str) -> bool:
+    normalized = _compact_text(text)
+    return any(keyword in normalized for keyword in SAFETY_KEYWORDS)
+
+
+def _is_repetitive_asr_text(text: str) -> bool:
+    normalized = _compact_text(text)
+    if len(normalized) < 10:
+        return False
+    if len(set(normalized)) / max(1, len(normalized)) < 0.28:
+        return True
+    for width in range(2, min(9, len(normalized) // 2 + 1)):
+        chunks = [normalized[i : i + width] for i in range(0, len(normalized) - width + 1, width)]
+        if len(chunks) >= 3 and max(chunks.count(chunk) for chunk in set(chunks)) >= 3:
+            return True
+    return False
+
+
+def classify_feedback_candidate(text: str) -> tuple[bool, str]:
+    normalized = _compact_text(text)
+    if not normalized:
+        return False, "empty"
+    if _has_safety_keyword(normalized):
+        return True, "safety_keyword"
+    if any(phrase in normalized for phrase in COMMON_ASR_HALLUCINATIONS):
+        return False, "common_asr_hallucination"
+    if _is_repetitive_asr_text(normalized):
+        return False, "repetitive_asr"
+    if any(keyword in normalized for keyword in FEEDBACK_KEYWORDS):
+        return True, "feedback_keyword"
+    if len(normalized) <= 2:
+        return False, "too_short"
+    return False, "no_feedback_keyword"
 
 
 def _describe_adjustment(set_delta: int, rest_multiplier: float) -> str:
@@ -63,88 +175,119 @@ def _describe_adjustment(set_delta: int, rest_multiplier: float) -> str:
     return "，".join(parts)
 
 
+def _format_instruction_speech(raw: str) -> tuple[str, str]:
+    exercise_match = re.search(r"Exercise:\s*(.*?)(?:\s+Instructions:|$)", raw, re.IGNORECASE | re.DOTALL)
+    instructions_match = re.search(r"Instructions:\s*(.*)", raw, re.IGNORECASE | re.DOTALL)
+    exercise_name = exercise_match.group(1).strip() if exercise_match else ""
+    instruction_text = instructions_match.group(1).strip() if instructions_match else raw
+    steps = [step.strip(" -;；。") for step in re.split(r"\s*[;；]\s*", instruction_text) if step.strip(" -;；。")]
+
+    if steps:
+        ordered_steps = []
+        for index, step in enumerate(steps):
+            marker = CHINESE_ORDER_MARKERS[index] if index < len(CHINESE_ORDER_MARKERS) else str(index + 1)
+            ordered_steps.append(f"{marker}、{step}")
+        speech_text = "动作要求：" + "；".join(ordered_steps) + "。"
+    else:
+        speech_text = "请保持安全、受控的动作节奏。"
+
+    if exercise_name:
+        speech_text = f"接下来是{exercise_name}。" + speech_text
+
+    return exercise_name, speech_text
+
+
 def classify_coach_message(message: str) -> Dict[str, Any]:
     raw = message.strip()
     compact = " ".join(raw.split())
     if not compact:
-        return {"display": False, "speak": False, "message": raw, "speech_text": "", "category": "empty"}
+        return _coach_message(display=False, speak=False, message=raw, category="empty")
 
     if set(compact) <= {"-"} or compact.startswith("====="):
-        return {"display": False, "speak": False, "message": raw, "speech_text": "", "category": "separator"}
+        return _coach_message(display=False, speak=False, message=raw, category="separator")
 
     if compact.startswith("Session log saved"):
-        return {"display": False, "speak": False, "message": raw, "speech_text": "", "category": "log_saved"}
+        return _coach_message(display=False, speak=False, message=raw, category="log_saved")
 
     if "训练计划已生成" in compact and "\n" in raw:
-        return {
-            "display": False,
-            "speak": True,
-            "message": raw,
-            "speech_text": "训练计划已生成，准备开始。",
-            "category": "plan_ready",
-        }
+        return _coach_message(
+            display=False,
+            speak=True,
+            message=raw,
+            speech_text="训练计划已生成，准备开始。",
+            category="plan_ready",
+        )
 
     if "正在为你生成训练计划" in compact:
-        return {
-            "display": True,
-            "speak": True,
-            "message": _strip_coach_prefix(compact),
-            "speech_text": "正在为你生成训练计划，请稍等。",
-            "category": "planning",
-        }
+        return _coach_message(
+            display=True,
+            speak=False,
+            message=_strip_coach_prefix(compact),
+            category="planning",
+        )
 
     set_match = re.match(r"Set\s+(\d+)/(\d+)\s+start", compact, re.IGNORECASE)
     if set_match:
         current, total = set_match.groups()
-        return {
-            "display": False,
-            "speak": True,
-            "message": compact,
-            "speech_text": f"第 {current} 组开始，共 {total} 组。",
-            "category": "set_start",
-        }
+        return _coach_message(
+            display=False,
+            speak=True,
+            message=compact,
+            speech_text=f"第 {current} 组开始，共 {total} 组。",
+            category="set_start",
+        )
 
     rest_match = re.match(r"Rest for\s+(\d+)\s+seconds", compact, re.IGNORECASE)
     if rest_match:
         seconds = rest_match.group(1)
-        return {
-            "display": False,
-            "speak": True,
-            "message": compact,
-            "speech_text": f"休息 {seconds} 秒。",
-            "category": "rest_start",
-        }
+        return _coach_message(
+            display=False,
+            speak=True,
+            message=compact,
+            speech_text=f"休息 {seconds} 秒。",
+            category="rest_start",
+        )
 
     if compact == "Set finished.":
-        return {"display": False, "speak": True, "message": compact, "speech_text": "本组完成。", "category": "set_end"}
+        return _coach_message(display=False, speak=True, message=compact, speech_text="本组完成。", category="set_end")
 
     if compact == "Round finished.":
-        return {"display": False, "speak": True, "message": compact, "speech_text": "本轮完成。", "category": "round_end"}
+        return _coach_message(display=False, speak=True, message=compact, speech_text="本轮完成。", category="round_end")
 
     round_match = re.match(r"Round\s+(\d+)/(\d+)\s+start", compact, re.IGNORECASE)
     if round_match:
         current, total = round_match.groups()
-        return {
-            "display": False,
-            "speak": True,
-            "message": compact,
-            "speech_text": f"第 {current} 轮开始，共 {total} 轮。",
-            "category": "round_start",
-        }
+        return _coach_message(
+            display=False,
+            speak=True,
+            message=compact,
+            speech_text=f"第 {current} 轮开始，共 {total} 轮。",
+            category="round_start",
+        )
 
     if compact.startswith("Rest between rounds for"):
         seconds = re.findall(r"\d+", compact)
         speech = f"轮间休息 {seconds[0]} 秒。" if seconds else "轮间休息。"
-        return {"display": False, "speak": True, "message": compact, "speech_text": speech, "category": "rest_start"}
+        return _coach_message(display=False, speak=True, message=compact, speech_text=speech, category="rest_start")
 
     if "WORKOUT COMPLETE" in compact.upper():
-        return {"display": True, "speak": True, "message": "训练完成。", "speech_text": "训练完成。", "category": "session_end"}
+        return _coach_message(display=True, speak=True, message="训练完成。", speech_text="训练完成。", category="session_end")
 
     if "WORKOUT STOPPED" in compact.upper():
-        return {"display": True, "speak": True, "message": compact, "speech_text": "训练已停止。", "category": "session_end"}
+        return _coach_message(display=True, speak=True, message=compact, speech_text="训练已停止。", category="session_end")
+
+    if compact.startswith("Exercise:") and "Instructions:" in compact:
+        exercise_name, speech_text = _format_instruction_speech(raw)
+        return _coach_message(
+            display=True,
+            speak=True,
+            message=exercise_name or compact,
+            speech_text=speech_text,
+            category="exercise_instructions",
+        )
 
     if compact.startswith("Exercise:") or compact.startswith("demo_speed:") or compact.startswith("Instructions:") or compact.startswith("- "):
-        return {"display": False, "speak": False, "message": compact, "speech_text": "", "category": "exercise_detail"}
+        return _coach_message(display=False, speak=False, message=compact, category="exercise_detail")
 
     if compact.startswith("[Adjustment]"):
         set_match = re.search(r"set_delta=([-+]?\d+)", compact)
@@ -159,16 +302,10 @@ def classify_coach_message(message: str) -> Dict[str, Any]:
             speech_text = "动作已根据反馈替换。"
         else:
             speech_text = "训练安排已根据反馈调整。"
-        return {
-            "display": True,
-            "speak": True,
-            "message": compact,
-            "speech_text": speech_text,
-            "category": "adjustment",
-        }
+        return _coach_message(display=True, speak=True, message=compact, speech_text=speech_text, category="adjustment")
 
     cleaned = _strip_coach_prefix(compact)
-    return {"display": True, "speak": True, "message": cleaned, "speech_text": cleaned, "category": "coach_reply"}
+    return _coach_message(display=True, speak=True, message=cleaned, speech_text=cleaned, category="coach_reply")
 
 
 class VoiceCoachIO:
@@ -176,17 +313,69 @@ class VoiceCoachIO:
         self._publish = publish
         self._messages: "queue.Queue[str]" = queue.Queue()
         self._closed = False
+        self._speech_lock = threading.Lock()
+        self._speech_counter = 0
+        self._speech_events: Dict[str, threading.Event] = {}
+        self._last_speech_id_by_category: Dict[str, str] = {}
         self.nonblocking_feedback = True
 
-    def enqueue_user_text(self, text: str) -> None:
+    def enqueue_user_text(self, text: str, *, safety: bool = False) -> None:
         cleaned = text.strip()
-        if cleaned and not self._closed:
-            self._messages.put(cleaned)
+        if not cleaned or self._closed:
+            return
+        if not safety:
+            self._drop_pending_normal_feedback()
+        self._messages.put(cleaned)
+
+    def _drop_pending_normal_feedback(self) -> None:
+        kept = []
+        try:
+            while True:
+                message = self._messages.get_nowait()
+                if _has_safety_keyword(message):
+                    kept.append(message)
+        except queue.Empty:
+            pass
+        for message in kept:
+            self._messages.put(message)
 
     def send(self, message: str) -> None:
         if self._closed:
             return
-        self._publish({"type": "coach_message", **classify_coach_message(message)})
+        classified = classify_coach_message(message)
+        payload = {"type": "coach_message", **classified}
+        if classified.get("speak"):
+            speech_id = self._register_speech(str(classified.get("category", "")))
+            payload["speech_id"] = speech_id
+        self._publish(payload)
+
+    def _register_speech(self, category: str) -> str:
+        with self._speech_lock:
+            self._speech_counter += 1
+            speech_id = f"speech-{self._speech_counter}"
+            self._speech_events[speech_id] = threading.Event()
+            if category:
+                self._last_speech_id_by_category[category] = speech_id
+            return speech_id
+
+    def mark_speech_done(self, speech_id: str) -> None:
+        with self._speech_lock:
+            event = self._speech_events.get(speech_id)
+        if event:
+            event.set()
+
+    def wait_for_speech(self, category: str, timeout: float = 30.0) -> bool:
+        with self._speech_lock:
+            speech_id = self._last_speech_id_by_category.get(category)
+            event = self._speech_events.get(speech_id) if speech_id else None
+        if event is None:
+            return True
+        completed = event.wait(timeout=timeout)
+        with self._speech_lock:
+            self._speech_events.pop(speech_id, None)
+            if self._last_speech_id_by_category.get(category) == speech_id:
+                self._last_speech_id_by_category.pop(category, None)
+        return completed
 
     def send_event(self, event_type: str, payload: Dict[str, Any]) -> None:
         if self._closed:
@@ -215,6 +404,8 @@ class CoachSession:
         self.coach_thread: Optional[threading.Thread] = None
         self.transcriber: Optional[WhisperTranscriber | MockTranscriber] = None
         self._closed = False
+        self._last_feedback_text = ""
+        self._last_feedback_at = 0.0
 
     async def publish(self, payload: Dict[str, Any]) -> None:
         await self.websocket.send_text(json.dumps(payload, ensure_ascii=False))
@@ -285,13 +476,26 @@ class CoachSession:
     async def route_transcript(self, text: str) -> None:
         if self.state == "idle":
             await self.publish({"type": "user_transcript", "text": text, "target": "initial_intent"})
+            await self.publish(_initial_planning_message())
             await self.set_state("planning")
             self.start_coach(text)
             return
 
         if self.state in {"planning", "workout_running"}:
-            self.io.enqueue_user_text(text)
-            await self.publish({"type": "user_transcript", "text": text, "target": "feedback"})
+            accepted, reason = classify_feedback_candidate(text)
+            normalized = _compact_text(text)
+            now = time.monotonic()
+            if accepted and normalized == self._last_feedback_text and now - self._last_feedback_at < 3.0:
+                accepted = False
+                reason = "duplicate_recent"
+            if accepted:
+                safety = reason == "safety_keyword"
+                self.io.enqueue_user_text(text, safety=safety)
+                self._last_feedback_text = normalized
+                self._last_feedback_at = now
+                await self.publish({"type": "user_transcript", "text": text, "target": "feedback"})
+            else:
+                await self.publish({"type": "user_transcript", "text": text, "target": "ignored_noise", "reason": reason})
             return
 
         await self.publish({"type": "user_transcript", "text": text, "target": "ignored"})
@@ -349,9 +553,9 @@ class ServerConfig:
         self.feedback_model = "frob/qwen3.5-instruct:4b"
         self.vad_mode = 3
         self.vad_silence_ms = 800
-        self.vad_min_speech_ms = 180
-        self.vad_start_trigger_ms = 100
-        self.vad_energy_threshold = 350.0
+        self.vad_min_speech_ms = 500
+        self.vad_start_trigger_ms = 220
+        self.vad_energy_threshold = 600.0
 
     def resolved_asr_model(self) -> str:
         return str(Path(self.asr_model).resolve()) if os.path.isdir(self.asr_model) else self.asr_model
@@ -451,6 +655,10 @@ async def audio_websocket(websocket: WebSocket) -> None:
                     muted = False
                     segmenter.reset()
                     await session.publish({"type": "state_update", "status": "listening"})
+                elif command == "speech_done":
+                    speech_id = str(payload.get("speech_id", ""))
+                    if speech_id:
+                        session.io.mark_speech_done(speech_id)
                 else:
                     await session.publish({"type": "error", "message": f"Unknown command: {command}"})
     except WebSocketDisconnect:
@@ -482,9 +690,9 @@ def main() -> None:
     parser.add_argument("--feedback-model", default="frob/qwen3.5-instruct:4b")
     parser.add_argument("--vad-mode", type=int, default=3, choices=[0, 1, 2, 3])
     parser.add_argument("--vad-silence-ms", type=int, default=800)
-    parser.add_argument("--vad-min-speech-ms", type=int, default=180)
-    parser.add_argument("--vad-start-trigger-ms", type=int, default=100)
-    parser.add_argument("--vad-energy-threshold", type=float, default=350.0)
+    parser.add_argument("--vad-min-speech-ms", type=int, default=500)
+    parser.add_argument("--vad-start-trigger-ms", type=int, default=220)
+    parser.add_argument("--vad-energy-threshold", type=float, default=600.0)
     args = parser.parse_args()
 
     config.asr_model = args.model

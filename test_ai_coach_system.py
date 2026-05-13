@@ -119,6 +119,8 @@ class TestAICoachSystem(unittest.TestCase):
                     reason=f"intent={intent}",
                     raw_text=user_text,
                     llm_channel="sdk",
+                    actions=["decrease_rest", "speed_up_tempo"] if intent == "pace_up" else ["no_action"],
+                    safety="none",
                 )
 
             result = system.run_session(

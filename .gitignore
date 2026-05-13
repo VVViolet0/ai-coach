@@ -30,3 +30,8 @@ voice_demo/*.log
 voice_demo/models/*
 !voice_demo/models/.gitignore
 voice_demo/static/*.map
+
+# Portable runtime bundles and local packaged apps
+.portable_runtime/
+AI-Coach-Voice-Portable/
+AI-Coach-Voice-Portable-Slim/

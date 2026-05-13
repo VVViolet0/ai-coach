@@ -1,9 +1,15 @@
 import asyncio
 import json
+import threading
 import time
 
 import voice_demo.coach_server as coach_server
-from voice_demo.coach_server import VoiceCoachIO, classify_coach_message
+from voice_demo.coach_server import (
+    INITIAL_PLANNING_SPEECH,
+    VoiceCoachIO,
+    classify_coach_message,
+    classify_feedback_candidate,
+)
 from voice_demo.server import WhisperTranscriber
 
 
@@ -17,22 +23,69 @@ def test_voice_coach_io_polls_queued_text_once():
     assert io.poll_user_input() is None
 
 
+def test_voice_coach_io_replaces_pending_normal_feedback_but_keeps_safety():
+    events = []
+    io = VoiceCoachIO(events.append)
+
+    io.enqueue_user_text("休息太长了")
+    io.enqueue_user_text("我膝盖疼", safety=True)
+    io.enqueue_user_text("太累了")
+
+    assert io.poll_user_input() == "我膝盖疼"
+    assert io.poll_user_input() == "太累了"
+    assert io.poll_user_input() is None
+
+
+def test_feedback_candidate_gate_filters_repetitive_asr_noise():
+    accepted, reason = classify_feedback_candidate("这次是什么时候这次是什么时候这次是什么时候")
+
+    assert accepted is False
+    assert reason == "repetitive_asr"
+
+
+def test_feedback_candidate_gate_accepts_rest_and_safety_feedback():
+    assert classify_feedback_candidate("休息时间可以短一点")[0] is True
+    assert classify_feedback_candidate("我膝盖疼")[1] == "safety_keyword"
+
+
 def test_voice_coach_io_send_publishes_coach_message():
     events = []
     io = VoiceCoachIO(events.append)
 
-    io.send("[Coach] keep going")
+    io.send("[Coach] 继续保持节奏")
 
+    speech_id = events[0].pop("speech_id")
+    assert speech_id == "speech-1"
     assert events == [
         {
             "type": "coach_message",
             "display": True,
             "speak": True,
-            "message": "keep going",
-            "speech_text": "keep going",
+            "message": "继续保持节奏",
+            "speech_text": "继续保持节奏",
             "category": "coach_reply",
         }
     ]
+
+
+def test_voice_coach_io_tracks_speech_completion_for_exercise_preview():
+    events = []
+    io = VoiceCoachIO(events.append)
+
+    io.send("Exercise: 俯卧撑\nInstructions: 身体保持一条直线")
+
+    speech_id = events[0]["speech_id"]
+    completed = []
+    waiter = threading.Thread(
+        target=lambda: completed.append(io.wait_for_speech("exercise_instructions", timeout=1)),
+        daemon=True,
+    )
+    waiter.start()
+    time.sleep(0.05)
+    io.mark_speech_done(speech_id)
+    waiter.join(timeout=1)
+
+    assert completed == [True]
 
 
 def test_voice_coach_io_close_stops_polling_and_publishing():
@@ -69,6 +122,17 @@ def test_classify_coach_message_filters_non_speech_messages():
 def test_classify_coach_message_converts_timing_prompts_to_short_speech():
     assert classify_coach_message("Set 2/4 start (tempo: normal)")["speech_text"] == "第 2 组开始，共 4 组。"
     assert classify_coach_message("Rest for 30 seconds.")["speech_text"] == "休息 30 秒。"
+
+
+def test_classify_coach_message_speaks_full_exercise_instructions():
+    classified = classify_coach_message(
+        "Exercise: 俯卧撑\nInstructions: 双手撑地，距离略宽于肩; 身体保持一条直线"
+    )
+
+    assert classified["display"] is True
+    assert classified["speak"] is True
+    assert classified["category"] == "exercise_instructions"
+    assert classified["speech_text"] == "接下来是俯卧撑。动作要求：一、双手撑地，距离略宽于肩；二、身体保持一条直线。"
 
 
 def test_classify_coach_message_speaks_adjustment_values():
@@ -115,6 +179,14 @@ def test_coach_session_routes_initial_intent_and_feedback(monkeypatch):
         websocket = FakeWebSocket()
         session = coach_server.CoachSession(websocket, coach_server.ServerConfig())
         await session.route_transcript("我想做二十分钟全身训练")
+        await asyncio.sleep(0.05)
+        initial_prompt = next(
+            event for event in websocket.events
+            if event.get("type") == "coach_message" and event.get("category") == "initial_planning"
+        )
+        assert initial_prompt["speak"] is True
+        assert initial_prompt["speech_text"] == INITIAL_PLANNING_SPEECH
+
         await session.route_transcript("太累了")
 
         assert session.coach_thread is not None
@@ -127,6 +199,21 @@ def test_coach_session_routes_initial_intent_and_feedback(monkeypatch):
         assert "user_transcript" in event_types
         assert "coach_message" in event_types
         assert "session_summary" in event_types
+
+    asyncio.run(scenario())
+
+
+def test_coach_session_ignores_noise_transcript_during_workout():
+    async def scenario():
+        websocket = FakeWebSocket()
+        session = coach_server.CoachSession(websocket, coach_server.ServerConfig())
+        session.state = "workout_running"
+
+        await session.route_transcript("我认为你会不会有什么事")
+
+        assert session.io.poll_user_input() is None
+        transcript_events = [event for event in websocket.events if event.get("type") == "user_transcript"]
+        assert transcript_events[-1]["target"] == "ignored_noise"
 
     asyncio.run(scenario())
 
