@@ -72,26 +72,22 @@ def load_exercise_library(path: str = "libraries/exercise_library.json") -> List
 
 
 def filter_exercises(exercises: List[Dict[str, Any]], intent: Dict[str, Any]) -> List[Dict[str, Any]]:
-    available_equipment = set(intent.get("equipment_available", ["none"]))
     avoids = set(intent.get("avoid_body_parts", []))
     targets = set(intent.get("target_muscles", ["full_body"]))
     filtered: List[Dict[str, Any]] = []
     for ex in exercises:
-        if ex.get("equipment") not in available_equipment:
-            continue
-
         ex_muscles = set(ex.get("target_muscles", []))
         if avoids.intersection(ex_muscles):
             continue
 
-        if "full_body" in targets or targets.intersection(ex_muscles):
+        if targets.intersection(ex_muscles):
             filtered.append(ex)
 
     if filtered:
         return filtered
 
     for ex in exercises:
-        if ex.get("equipment") in available_equipment and not avoids.intersection(set(ex.get("target_muscles", []))):
+        if not avoids.intersection(set(ex.get("target_muscles", []))):
             filtered.append(ex)
 
     return filtered
@@ -263,7 +259,6 @@ if __name__ == "__main__":
         "duration_minutes": 15,
         "intensity_preference": "moderate",
         "experience_level": "unknown",
-        "equipment_available": ["none"],
         "avoid_body_parts": ["arms"],
     }
 

@@ -16,14 +16,12 @@ DEFAULT_INTENT: Dict[str, Any] = {
     "duration_minutes": 30,
     "intensity_preference": "moderate",
     "experience_level": "unknown",
-    "equipment_available": ["none"],
     "avoid_body_parts": [],
 }
 
 ALLOWED_SESSION_GOALS = {"fat_loss", "strength", "general_fitness"}
 ALLOWED_INTENSITY = {"low", "moderate", "high"}
 ALLOWED_LEVELS = {"beginner", "intermediate", "advanced", "unknown"}
-ALLOWED_EQUIPMENT = {"dumbbell", "resistance_band", "none"}
 ALLOWED_MUSCLES = {"legs", "core", "chest", "back", "arms", "full_body"}
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
@@ -119,9 +117,6 @@ def normalize_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
     level = str(intent.get("experience_level", normalized["experience_level"])).strip().lower()
     normalized["experience_level"] = level if level in ALLOWED_LEVELS else "unknown"
 
-    equipment = [e for e in _normalize_string_list(intent.get("equipment_available")) if e in ALLOWED_EQUIPMENT]
-    normalized["equipment_available"] = equipment or ["none"]
-
     normalized["avoid_body_parts"] = _normalize_string_list(intent.get("avoid_body_parts"))
     return normalized
 
@@ -142,16 +137,14 @@ Schema:
  "duration_minutes": int,
  "intensity_preference": "low | moderate | high",
  "experience_level": "beginner | intermediate | advanced | unknown",
- "equipment_available": ["dumbbell","resistance_band","none"],
  "avoid_body_parts": []
 }}
 
 Rules:
 1. duration default 30 if not mentioned
 2. target_muscles default ["full_body"]
-3. equipment default ["none"]
-4. avoid_body_parts default []
-5. The user request may come from Chinese speech recognition and may contain homophone or near-sound errors. Infer session_goal, target_muscles, and duration_minutes from the fitness context.
+3. avoid_body_parts default []
+4. The user request may come from Chinese speech recognition and may contain homophone or near-sound errors. Infer session_goal, target_muscles, and duration_minutes from the fitness context.
 
 User request:
 {user_text}

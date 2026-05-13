@@ -26,6 +26,7 @@ class ScriptedIO:
     def __init__(self, script):
         self.script = script
         self.outputs = []
+        self.events = []
         self.inbox = []
         self._fired = set()
         self.closed = False
@@ -39,6 +40,9 @@ class ScriptedIO:
             if trigger in message:
                 self.inbox.append(rule["message"])
                 self._fired.add(idx)
+
+    def send_event(self, event_type, payload):
+        self.events.append((event_type, payload))
 
     def poll_user_input(self):
         if not self.inbox:
@@ -75,19 +79,16 @@ def build_library():
         {
             "name": "push_up",
             "target_muscles": ["chest", "arms"],
-            "equipment": "none",
             "avg_set_time": 1,
         },
         {
             "name": "bodyweight_squat",
             "target_muscles": ["legs"],
-            "equipment": "none",
             "avg_set_time": 1,
         },
         {
             "name": "plank",
             "target_muscles": ["chest", "core"],
-            "equipment": "none",
             "avg_set_time": 1,
         },
     ]
@@ -168,8 +169,9 @@ class TestAdaptiveWorkoutExecutor(unittest.TestCase):
         self.assertEqual("completed", state.end_reason)
         self.assertEqual(2, state.workout_plan["exercises"][0]["total_sets"])
         self.assertEqual(2, state.workout_plan["exercises"][1]["total_sets"])
-        self.assertTrue(any("set_delta=-1" in line for line in io.outputs))
-        self.assertTrue(any("rest_multiplier=1.25" in line for line in io.outputs))
+        self.assertTrue(any(log["set_delta"] == -1 for log in state.adjustment_log))
+        self.assertTrue(any(log["rest_multiplier"] == 1.25 for log in state.adjustment_log))
+        self.assertFalse(any(line.startswith("[Adjustment]") for line in io.outputs))
 
     def test_pain_triggers_auto_downshift_and_confirmation(self):
         io = ScriptedIO([
@@ -357,6 +359,42 @@ class TestAdaptiveWorkoutExecutor(unittest.TestCase):
 
         self.assertEqual(1, state.workout_plan["exercises"][0]["total_sets"])
         self.assertTrue(any(log["action_type"] == "skip_current_exercise" for log in state.adjustment_log))
+
+    def test_replace_current_exercise_updates_plan_event_and_rebroadcasts_demo(self):
+        io = ScriptedIO([
+            {"when_contains": "Set 1/2 start", "message": "replace this exercise"},
+        ])
+        clock = FakeClock()
+        understander = make_understander(
+            {
+                "replace": result(
+                    "preference_dislike",
+                    preference="dislike",
+                    actions=["replace_current_exercise"],
+                    reply="好的，我帮你换一个动作。",
+                )
+            },
+            default=result("neutral", confidence=0.2),
+        )
+
+        state = run_adaptive_workout(
+            build_plan(total_sets=2),
+            io=io,
+            clock=clock,
+            exercise_library=build_library(),
+            feedback_understander=understander,
+        )
+
+        replaced = state.workout_plan["exercises"][0]
+        self.assertEqual("plank", replaced["exercise_name"])
+        self.assertTrue(any(log["action_type"] == "replace_exercise" for log in state.adjustment_log))
+        self.assertFalse(any(line.startswith("[Adjustment]") for line in io.outputs))
+        self.assertTrue(any(line.startswith(f"Exercise: {replaced['display_name']}") for line in io.outputs))
+
+        replacement_events = [payload for event_type, payload in io.events if event_type == "exercise_replaced"]
+        self.assertEqual(1, len(replacement_events))
+        self.assertEqual(0, replacement_events[0]["exercise_index"])
+        self.assertEqual("plank", replacement_events[0]["exercise"]["exercise_name"])
 
     def test_preference_dislike_shorter_rest_request_does_not_skip_sets(self):
         io = ScriptedIO([

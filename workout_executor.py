@@ -744,7 +744,6 @@ def _find_replacement_exercise(state: SessionState) -> Optional[str]:
         return None
 
     current_targets = set(current_def.get("target_muscles", []))
-    current_equipment = current_def.get("equipment", "none")
     existing = {ex["exercise_name"] for ex in state.workout_plan["exercises"]}
 
     candidates: List[Tuple[int, str]] = []
@@ -753,8 +752,6 @@ def _find_replacement_exercise(state: SessionState) -> Optional[str]:
         if not candidate_name or candidate_name == current_name:
             continue
         if candidate_name in existing:
-            continue
-        if ex.get("equipment") != current_equipment:
             continue
         overlap = len(current_targets.intersection(set(ex.get("target_muscles", []))))
         if overlap <= 0:
@@ -887,7 +884,7 @@ def _apply_adjustment_action(
                 "rule_id": action.rule_id,
             },
         )
-        io.send(f"[Adjustment] replaced exercise: {before_name} -> {target_name}")
+        _show_demo(io, exercise)
         return
 
     if action.action_type == "skip_current_exercise":
@@ -945,7 +942,6 @@ def _apply_adjustment_action(
                 "rule_id": action.rule_id,
             },
         )
-        io.send(f"[Adjustment] skipped remaining sets for current exercise: {exercise['exercise_name']}")
         return
 
     if action.action_type != "adjust_intensity":
@@ -1023,10 +1019,6 @@ def _apply_adjustment_action(
             "confidence": confidence,
             "exercise_changes": exercise_changes,
         },
-    )
-    io.send(
-        f"[Adjustment] next blocks updated: set_delta={safe_set_delta}, "
-        f"rest_multiplier={safe_multiplier:.2f}, tempo={state.tempo_cue}"
     )
 
 

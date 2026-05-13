@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from ai_coach_system import AICoachSystem
 from feedback_understanding import FeedbackUnderstandingResult
+from workout_planner import filter_exercises
 
 
 class FakeClock:
@@ -52,7 +53,6 @@ class StubAICoachSystem(AICoachSystem):
             "duration_minutes": 5,
             "intensity_preference": "moderate",
             "experience_level": "beginner",
-            "equipment_available": ["none"],
             "avoid_body_parts": [],
         }
 
@@ -80,6 +80,17 @@ class StubAICoachSystem(AICoachSystem):
 
 
 class TestAICoachSystem(unittest.TestCase):
+    def test_full_body_filter_uses_only_full_body_exercises(self):
+        exercises = [
+            {"name": "push_up", "target_muscles": ["chest"]},
+            {"name": "jumping_jacks", "target_muscles": ["full_body"]},
+            {"name": "mountain_climber", "target_muscles": ["core", "full_body"]},
+        ]
+
+        filtered = filter_exercises(exercises, {"target_muscles": ["full_body"], "avoid_body_parts": []})
+
+        self.assertEqual(["jumping_jacks", "mountain_climber"], [ex["name"] for ex in filtered])
+
     def test_run_session_generates_files_without_execution(self):
         tmpdir = os.path.join("data", f"test_output_{uuid4().hex}")
         os.makedirs(tmpdir, exist_ok=True)

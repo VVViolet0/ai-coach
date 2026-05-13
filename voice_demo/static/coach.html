@@ -461,6 +461,22 @@
         renderPlan(workoutIntent || {}, workoutPlan);
       }
 
+      function applyExerciseReplacement(payload) {
+        if (!workoutPlan || !workoutPlan.exercises || typeof payload.exercise_index !== "number") {
+          return;
+        }
+        const exercise = workoutPlan.exercises[payload.exercise_index];
+        if (!exercise || !payload.exercise) {
+          return;
+        }
+        workoutPlan.exercises[payload.exercise_index] = { ...exercise, ...payload.exercise };
+        renderPlan(workoutIntent || {}, workoutPlan);
+        highlightExercise(payload.exercise_index);
+        const currentName = payload.exercise.display_name || payload.exercise.exercise_name || payload.after || "-";
+        setText("currentExercise", currentName);
+        setText("set", `0/${payload.exercise.total_sets || "-"}`);
+      }
+
       function handleRuntimeEvent(eventType, payload) {
         if (eventType === "plan_generated") {
           renderPlan(payload.intent, payload.workout_plan);
@@ -497,16 +513,11 @@
           addRecord("feedbackRecords", "反馈未调整", payload.raw_text || "", payload.reason || "");
         } else if (eventType === "adjustment_applied") {
           applyExerciseChanges(payload.exercise_changes);
-          const adjustmentParts = [];
-          const setDelta = Number(payload.set_delta || 0);
-          const restMultiplier = Number(payload.rest_multiplier || 1);
-          if (setDelta < 0) adjustmentParts.push(`减少 ${Math.abs(setDelta)} 组动作`);
-          if (setDelta > 0) adjustmentParts.push(`增加 ${setDelta} 组动作`);
-          if (restMultiplier > 1.02) adjustmentParts.push("延长休息时间");
-          if (restMultiplier < 0.98) adjustmentParts.push("缩短休息时间");
-          addRecord("adjustmentRecords", "强度调整", adjustmentParts.join("，") || "训练安排已更新", payload.reason || "");
+          addRecord("adjustmentRecords", "反馈调整", payload.reason || "训练安排已更新", (payload.source_actions || []).join(", "));
         } else if (eventType === "exercise_replaced") {
-          addRecord("adjustmentRecords", "动作替换", `${payload.before} → ${payload.after}`, payload.reason || "");
+          applyExerciseReplacement(payload);
+          const displayName = payload.exercise?.display_name || payload.after || "-";
+          addRecord("adjustmentRecords", "动作替换", `${payload.before} → ${displayName}`, payload.reason || "");
         } else if (eventType === "log_saved") {
           addRecord("adjustmentRecords", "日志已保存", payload.path);
         } else if (eventType === "session_end") {

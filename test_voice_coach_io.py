@@ -135,12 +135,12 @@ def test_classify_coach_message_speaks_full_exercise_instructions():
     assert classified["speech_text"] == "接下来是俯卧撑。动作要求：一、双手撑地，距离略宽于肩；二、身体保持一条直线。"
 
 
-def test_classify_coach_message_speaks_adjustment_values():
+def test_classify_coach_message_does_not_speak_adjustment_values():
     message = "[Adjustment] next blocks updated: set_delta=-1, rest_multiplier=1.20, tempo=slower"
     classified = classify_coach_message(message)
 
-    assert classified["speak"] is True
-    assert classified["speech_text"] == "强度调整，减少 1 组动作，延长休息时间。"
+    assert classified["speak"] is False
+    assert classified["category"] == "adjustment"
 
 
 class FakeWebSocket:

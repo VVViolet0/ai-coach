@@ -290,19 +290,7 @@ def classify_coach_message(message: str) -> Dict[str, Any]:
         return _coach_message(display=False, speak=False, message=compact, category="exercise_detail")
 
     if compact.startswith("[Adjustment]"):
-        set_match = re.search(r"set_delta=([-+]?\d+)", compact)
-        rest_match = re.search(r"rest_multiplier=([0-9.]+)", compact)
-        if set_match and rest_match:
-            speech_text = (
-                "强度调整，"
-                + _describe_adjustment(int(set_match.group(1)), float(rest_match.group(1)))
-                + "。"
-            )
-        elif "replaced exercise" in compact:
-            speech_text = "动作已根据反馈替换。"
-        else:
-            speech_text = "训练安排已根据反馈调整。"
-        return _coach_message(display=True, speak=True, message=compact, speech_text=speech_text, category="adjustment")
+        return _coach_message(display=True, speak=False, message=compact, category="adjustment")
 
     cleaned = _strip_coach_prefix(compact)
     return _coach_message(display=True, speak=True, message=cleaned, speech_text=cleaned, category="coach_reply")
