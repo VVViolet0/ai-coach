@@ -151,6 +151,60 @@ def test_nonblocking_feedback_does_not_pause_phase_ticks():
     assert "feedback_processing_end" in event_types
 
 
+def test_nonblocking_feedback_is_used_during_between_sets_rest():
+    class RestFeedbackIO(EventIO):
+        nonblocking_feedback = True
+
+        def __init__(self):
+            super().__init__()
+            self.sent = False
+
+        def poll_user_input(self):
+            if self.sent or not self.events:
+                return None
+            event_type, payload = self.events[-1]
+            if event_type == "phase_tick" and payload["phase"] == "between_sets_rest":
+                self.sent = True
+                return "too hard"
+            return None
+
+    def slow_feedback_understander(user_text, state_snapshot, model):
+        import time
+        from feedback_understanding import FeedbackUnderstandingResult
+
+        time.sleep(0.05)
+        return FeedbackUnderstandingResult(
+            intent="fatigue",
+            fatigue_level="high",
+            difficulty_level="hard",
+            preference="neutral",
+            confidence=0.9,
+            reason="test",
+            raw_text=user_text,
+            llm_channel="test",
+            actions=["decrease_difficulty"],
+            safety="none",
+        )
+
+    plan = tiny_plan()
+    plan["exercises"][0]["total_sets"] = 2
+    plan["exercises"][0]["rest_seconds"] = 3
+    io = RestFeedbackIO()
+
+    run_adaptive_workout(plan, io=io, clock=FakeClock(), feedback_understander=slow_feedback_understander)
+
+    rest_ticks = [
+        payload["seconds_remaining"]
+        for event_type, payload in io.events
+        if event_type == "phase_tick" and payload["phase"] == "between_sets_rest"
+    ]
+    event_types = [event_type for event_type, _payload in io.events]
+
+    assert rest_ticks == [3, 2, 1]
+    assert "feedback_processing_start" in event_types
+    assert "feedback_processing_end" in event_types
+
+
 def test_nonblocking_feedback_replaces_pending_normal_messages():
     io = NonBlockingFeedbackIO()
     processed = []

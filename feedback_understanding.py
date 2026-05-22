@@ -208,7 +208,7 @@ Schema:
   "actions": ["allowed action"],
   "safety": "none|pain|stop_request",
   "confidence": 0.0,
-  "reason": "short explanation",
+  "reason": "brief reason, max 12 words",
   "reply": "short Chinese coach reply"
 }}
 
@@ -227,6 +227,7 @@ Rules:
 - Pain sets safety=pain.
 - Stop request sets safety=stop_request and action stop_workout.
 - If unclear, use ask_clarification or no_action with confidence<=0.4.
+- Keep reason short and factual. Do not explain rule chains or repeat the selected actions.
 """
 
 

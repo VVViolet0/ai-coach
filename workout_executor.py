@@ -389,13 +389,13 @@ def _log_feedback_ignored(
     state: SessionState,
     io: ExecutorIO,
     raw_text: str,
-    intent: str,
+    actions: List[str],
     confidence: float,
     reason: str,
 ) -> None:
     detail = {
         "raw_text": raw_text,
-        "intent": intent,
+        "actions": actions,
         "confidence": confidence,
         "reason": reason,
     }
@@ -523,12 +523,11 @@ def _apply_condition_from_understanding(
         "before_state": before,
         "after_state": state.user_condition.snapshot(),
         "trigger_text": understanding.raw_text,
-        "llm_intent": understanding.intent,
-        "llm_actions": understanding.actions,
-        "llm_safety": understanding.safety,
+        "actions": understanding.actions,
+        "safety": understanding.safety,
         "confidence": understanding.confidence,
         "reason": understanding.reason,
-        "llm_channel": understanding.llm_channel,
+        "understanding_channel": understanding.llm_channel,
         "phase": state.phase,
     }
     state.condition_log.append(condition_record)
@@ -647,27 +646,12 @@ def _action_to_adjustment(
     return None
 
 
-def _legacy_actions_from_intent(understanding: FeedbackUnderstandingResult) -> List[str]:
-    if understanding.actions != ["no_action"]:
-        return understanding.actions
-
-    legacy_map = {
-        "stop": ["stop_workout"],
-        "pain": ["decrease_difficulty"],
-        "fatigue": ["decrease_difficulty"],
-        "pace_up": ["decrease_rest", "speed_up_tempo"],
-        "pace_down": ["increase_rest", "slow_tempo"],
-        "preference_dislike": ["skip_current_exercise"],
-    }
-    return legacy_map.get(understanding.intent, understanding.actions)
-
-
 def _build_decision_from_actions(
     understanding: FeedbackUnderstandingResult,
     state: SessionState,
     decision_engine: DecisionEngine,
 ) -> DecisionResult:
-    actions = _legacy_actions_from_intent(understanding)
+    actions = understanding.actions
 
     if understanding.safety == "stop_request" or "stop_workout" in actions:
         return DecisionResult(
@@ -689,7 +673,7 @@ def _build_decision_from_actions(
                     tempo_cue="slower",
                     reason="pain_auto_downshift",
                     rule_id="pain_safety_downshift",
-                    state_reason="llm_intent=pain",
+                    state_reason="safety=pain",
                 )
             ],
             requires_confirmation=True,
@@ -817,7 +801,6 @@ def _apply_adjustment_action(
     action: AdjustmentAction,
     state: SessionState,
     io: ExecutorIO,
-    source_intent: str = "",
     confidence: float = 0.0,
     source_actions: Optional[List[str]] = None,
 ) -> None:
@@ -838,6 +821,7 @@ def _apply_adjustment_action(
 
         exercise = state.workout_plan["exercises"][state.current_exercise]
         before_name = exercise["exercise_name"]
+        before_display_name = exercise.get("display_name", before_name)
         exercise_demo_library = load_exercise_demo_library()
         details = exercise_demo_library.get(
             target_name,
@@ -857,7 +841,6 @@ def _apply_adjustment_action(
                 "reason": action.reason,
                 "rule_id": action.rule_id,
                 "state_reason": action.state_reason,
-                "source_intent": source_intent,
                 "source_actions": source_actions or [],
                 "confidence": confidence,
                 "replacement": {"before": before_name, "after": target_name},
@@ -878,6 +861,7 @@ def _apply_adjustment_action(
             {
                 "before": before_name,
                 "after": target_name,
+                "before_display_name": before_display_name,
                 "exercise_index": state.current_exercise,
                 "exercise": exercise,
                 "reason": action.reason,
@@ -906,7 +890,6 @@ def _apply_adjustment_action(
                 "reason": action.reason,
                 "rule_id": action.rule_id,
                 "state_reason": action.state_reason,
-                "source_intent": source_intent,
                 "source_actions": source_actions or [],
                 "confidence": confidence,
                 "exercise_change": {
@@ -949,6 +932,9 @@ def _apply_adjustment_action(
 
     safe_set_delta = _clamp_int(action.set_delta, MIN_SET_DELTA, MAX_SET_DELTA)
     safe_multiplier = max(MIN_REST_MULTIPLIER, min(MAX_REST_MULTIPLIER, action.rest_multiplier))
+    before_set_delta = state.set_delta
+    before_rest_multiplier = state.rest_multiplier
+    before_tempo_cue = state.tempo_cue
     state.set_delta = _clamp_int(state.set_delta + safe_set_delta, MIN_SET_DELTA, MAX_SET_DELTA)
     state.rest_multiplier = max(
         MIN_REST_MULTIPLIER,
@@ -990,7 +976,6 @@ def _apply_adjustment_action(
             "reason": action.reason,
             "rule_id": action.rule_id,
             "state_reason": action.state_reason,
-            "source_intent": source_intent,
             "source_actions": source_actions or [],
             "confidence": confidence,
             "exercise_changes": exercise_changes,
@@ -1012,9 +997,14 @@ def _apply_adjustment_action(
             "set_delta": safe_set_delta,
             "rest_multiplier": safe_multiplier,
             "tempo_cue": state.tempo_cue,
+            "before_set_delta": before_set_delta,
+            "after_set_delta": state.set_delta,
+            "before_rest_multiplier": before_rest_multiplier,
+            "after_rest_multiplier": state.rest_multiplier,
+            "before_tempo_cue": before_tempo_cue,
+            "after_tempo_cue": state.tempo_cue,
             "reason": action.reason,
             "rule_id": action.rule_id,
-            "source_intent": source_intent,
             "source_actions": source_actions or [],
             "confidence": confidence,
             "exercise_changes": exercise_changes,
@@ -1062,7 +1052,7 @@ def _handle_user_message(
             state,
             io,
             cleaned,
-            understanding.intent,
+            understanding.actions,
             understanding.confidence,
             "low_confidence",
         )
@@ -1073,7 +1063,6 @@ def _handle_user_message(
         io,
         "feedback_understood",
         {
-            "intent": understanding.intent,
             "fatigue_level": understanding.fatigue_level,
             "difficulty_level": understanding.difficulty_level,
             "preference": understanding.preference,
@@ -1099,7 +1088,7 @@ def _handle_user_message(
             state,
             io,
             cleaned,
-            decision.intent,
+            understanding.actions,
             understanding.confidence,
             "no_applicable_adjustment",
         )
@@ -1112,7 +1101,6 @@ def _handle_user_message(
             action,
             state,
             io,
-            source_intent=understanding.intent,
             confidence=understanding.confidence,
             source_actions=understanding.actions,
         )
@@ -1447,6 +1435,7 @@ def run_adaptive_workout(
                             decision_engine=runtime_decision_engine,
                             feedback_understander=runtime_feedback_understander,
                             feedback_model=feedback_model,
+                            feedback_worker=feedback_worker,
                         )
 
             if state.is_active and round_idx < rounds - 1:

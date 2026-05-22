@@ -477,6 +477,39 @@
         setText("set", `0/${payload.exercise.total_sets || "-"}`);
       }
 
+      function formatAdjustmentDetails(payload) {
+        const details = [];
+        const beforeTempo = payload.before_tempo_cue || "normal";
+        const afterTempo = payload.after_tempo_cue || payload.tempo_cue || "normal";
+        if (beforeTempo !== afterTempo) {
+          details.push(`tempo ${beforeTempo} → ${afterTempo}`);
+        }
+
+        const beforeRestMultiplier = Number(payload.before_rest_multiplier ?? 1);
+        const afterRestMultiplier = Number(payload.after_rest_multiplier ?? payload.rest_multiplier ?? 1);
+        if (Math.abs(beforeRestMultiplier - afterRestMultiplier) > 0.001) {
+          details.push(`休息倍率 ${beforeRestMultiplier.toFixed(2)} → ${afterRestMultiplier.toFixed(2)}`);
+        }
+
+        const beforeSetDelta = Number(payload.before_set_delta ?? 0);
+        const afterSetDelta = Number(payload.after_set_delta ?? beforeSetDelta);
+        if (beforeSetDelta !== afterSetDelta) {
+          details.push(`组数偏移 ${beforeSetDelta} → ${afterSetDelta}`);
+        }
+
+        (payload.exercise_changes || []).forEach((change) => {
+          const name = change.exercise_name || `exercise ${change.exercise_index + 1}`;
+          if (change.before?.total_sets !== change.after?.total_sets) {
+            details.push(`${name} 组数 ${change.before.total_sets} → ${change.after.total_sets}`);
+          }
+          if (change.before?.rest_seconds !== change.after?.rest_seconds) {
+            details.push(`${name} 休息 ${change.before.rest_seconds}s → ${change.after.rest_seconds}s`);
+          }
+        });
+
+        return details.join("；") || "训练安排已更新";
+      }
+
       function handleRuntimeEvent(eventType, payload) {
         if (eventType === "plan_generated") {
           renderPlan(payload.intent, payload.workout_plan);
@@ -506,18 +539,19 @@
         } else if (eventType === "feedback_received") {
           addRecord("feedbackRecords", "用户反馈", payload.text, payload.phase || "");
         } else if (eventType === "feedback_understood") {
-          addRecord("feedbackRecords", "反馈理解", `${payload.intent} · confidence ${payload.confidence}`, payload.reason || "");
+          addRecord("feedbackRecords", "反馈理解", `${(payload.actions || []).join(", ") || "no_action"} · confidence ${payload.confidence}`, payload.reason || "");
         } else if (eventType === "feedback_understanding_failed") {
           addRecord("feedbackRecords", "反馈未处理", payload.raw_text || "", payload.error_summary || "");
         } else if (eventType === "feedback_ignored") {
           addRecord("feedbackRecords", "反馈未调整", payload.raw_text || "", payload.reason || "");
         } else if (eventType === "adjustment_applied") {
           applyExerciseChanges(payload.exercise_changes);
-          addRecord("adjustmentRecords", "反馈调整", payload.reason || "训练安排已更新", (payload.source_actions || []).join(", "));
+          addRecord("adjustmentRecords", "反馈调整", formatAdjustmentDetails(payload), (payload.source_actions || []).join(", "));
         } else if (eventType === "exercise_replaced") {
           applyExerciseReplacement(payload);
+          const beforeName = payload.before_display_name || payload.before || "-";
           const displayName = payload.exercise?.display_name || payload.after || "-";
-          addRecord("adjustmentRecords", "动作替换", `${payload.before} → ${displayName}`, payload.reason || "");
+          addRecord("adjustmentRecords", "动作替换", `${beforeName} → ${displayName}`, "replace_current_exercise");
         } else if (eventType === "log_saved") {
           addRecord("adjustmentRecords", "日志已保存", payload.path);
         } else if (eventType === "session_end") {
@@ -574,7 +608,9 @@
             setText("vad", "silent");
             setText("latency", `${payload.latency_ms} ms`);
           } else if (payload.type === "user_transcript") {
-            addRecord("feedbackRecords", payload.target === "initial_intent" ? "初始需求" : "语音反馈", payload.text, payload.target);
+            const transcriptTitle = payload.target === "initial_intent" ? "初始需求" : "语音反馈";
+            const transcriptMeta = payload.reason ? `${payload.target} · ${payload.reason}` : payload.target;
+            addRecord("feedbackRecords", transcriptTitle, payload.text, transcriptMeta);
           } else if (payload.type === "coach_message") {
             if (payload.display) {
               setText("latestCue", payload.message);

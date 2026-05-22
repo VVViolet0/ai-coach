@@ -308,7 +308,55 @@ class TestAdaptiveWorkoutExecutor(unittest.TestCase):
         self.assertEqual("high", state.user_condition.fatigue_level)
         self.assertEqual("hard", state.user_condition.difficulty_level)
         self.assertTrue(len(state.condition_log) > 0)
+        self.assertNotIn("llm_intent", state.condition_log[-1])
+        self.assertNotIn("llm_actions", state.condition_log[-1])
+        self.assertEqual(["decrease_difficulty"], state.condition_log[-1]["actions"])
         self.assertTrue(any("state_reason" in log for log in state.adjustment_log))
+
+    def test_feedback_actions_drive_adjustment_without_logging_legacy_intent(self):
+        io = ScriptedIO([
+            {"when_contains": "Set 1/2 start", "message": "too tired"},
+        ])
+        clock = FakeClock()
+
+        def understander(user_text, _snapshot, model="test"):
+            _ = model
+            if "too tired" in user_text:
+                return _normalize_result(
+                    {
+                        "fatigue_level": "medium",
+                        "difficulty_level": "appropriate",
+                        "preference": "neutral",
+                        "actions": ["decrease_difficulty"],
+                        "safety": "none",
+                        "confidence": 0.9,
+                        "reason": "direct action",
+                    },
+                    raw_text=user_text,
+                    llm_channel="test",
+                )
+            return result("neutral", confidence=0.2)
+
+        state = run_adaptive_workout(
+            build_plan(total_sets=2, rest_seconds=10),
+            io=io,
+            clock=clock,
+            feedback_understander=understander,
+        )
+
+        self.assertTrue(any(log["action_type"] == "adjust_intensity" for log in state.adjustment_log))
+        self.assertEqual(1, state.workout_plan["exercises"][0]["total_sets"])
+        self.assertEqual(12, state.workout_plan["exercises"][0]["rest_seconds"])
+        self.assertNotIn("llm_intent", state.condition_log[-1])
+
+        adjustment_events = [payload for event_type, payload in io.events if event_type == "adjustment_applied"]
+        self.assertEqual(1, len(adjustment_events))
+        self.assertEqual("normal", adjustment_events[0]["before_tempo_cue"])
+        self.assertEqual("slower", adjustment_events[0]["after_tempo_cue"])
+        self.assertEqual(1.0, adjustment_events[0]["before_rest_multiplier"])
+        self.assertEqual(1.25, adjustment_events[0]["after_rest_multiplier"])
+        self.assertEqual(0, adjustment_events[0]["before_set_delta"])
+        self.assertEqual(-1, adjustment_events[0]["after_set_delta"])
 
     def test_multiple_feedback_actions_are_all_applied(self):
         io = ScriptedIO([
@@ -394,6 +442,48 @@ class TestAdaptiveWorkoutExecutor(unittest.TestCase):
         replacement_events = [payload for event_type, payload in io.events if event_type == "exercise_replaced"]
         self.assertEqual(1, len(replacement_events))
         self.assertEqual(0, replacement_events[0]["exercise_index"])
+        self.assertEqual("俯卧撑", replacement_events[0]["before_display_name"])
+        self.assertEqual("plank", replacement_events[0]["exercise"]["exercise_name"])
+
+    def test_replace_current_exercise_action_drives_replacement_without_legacy_intent(self):
+        io = ScriptedIO([
+            {"when_contains": "Set 1/2 start", "message": "please replace this"},
+        ])
+        clock = FakeClock()
+
+        def understander(user_text, _snapshot, model="test"):
+            _ = model
+            if "replace" in user_text:
+                return _normalize_result(
+                    {
+                        "fatigue_level": "medium",
+                        "difficulty_level": "appropriate",
+                        "preference": "dislike",
+                        "actions": ["replace_current_exercise"],
+                        "safety": "none",
+                        "confidence": 0.9,
+                        "reason": "direct replacement action",
+                    },
+                    raw_text=user_text,
+                    llm_channel="test",
+                )
+            return result("neutral", confidence=0.2)
+
+        state = run_adaptive_workout(
+            build_plan(total_sets=2),
+            io=io,
+            clock=clock,
+            exercise_library=build_library(),
+            feedback_understander=understander,
+        )
+
+        self.assertEqual("plank", state.workout_plan["exercises"][0]["exercise_name"])
+        self.assertTrue(any(log["action_type"] == "replace_exercise" for log in state.adjustment_log))
+        self.assertNotIn("llm_intent", state.condition_log[-1])
+        self.assertNotIn("source_intent", state.adjustment_log[-1])
+
+        replacement_events = [payload for event_type, payload in io.events if event_type == "exercise_replaced"]
+        self.assertEqual(1, len(replacement_events))
         self.assertEqual("plank", replacement_events[0]["exercise"]["exercise_name"])
 
     def test_preference_dislike_shorter_rest_request_does_not_skip_sets(self):

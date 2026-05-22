@@ -75,6 +75,18 @@ FEEDBACK_KEYWORDS = {
     "hard",
     "easy",
     "skip",
+    "感觉很好",
+    "很好",
+    "状态很好",
+    "可以多练",
+    "多练",
+    "加练",
+    "加组",
+    "多一组",
+    "再来",
+    "再练",
+    "more",
+    "longer",
 }
 SAFETY_KEYWORDS = {"疼", "痛", "不舒服", "停止", "结束", "停", "stop", "pain", "hurt", "quit"}
 COMMON_ASR_HALLUCINATIONS = {
@@ -483,7 +495,8 @@ class CoachSession:
                 self._last_feedback_at = now
                 await self.publish({"type": "user_transcript", "text": text, "target": "feedback"})
             else:
-                await self.publish({"type": "user_transcript", "text": text, "target": "ignored_noise", "reason": reason})
+                target = "ignored_noise" if reason in {"common_asr_hallucination", "repetitive_asr"} else "ignored_feedback"
+                await self.publish({"type": "user_transcript", "text": text, "target": target, "reason": reason})
             return
 
         await self.publish({"type": "user_transcript", "text": text, "target": "ignored"})

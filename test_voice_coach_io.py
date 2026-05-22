@@ -46,6 +46,7 @@ def test_feedback_candidate_gate_filters_repetitive_asr_noise():
 def test_feedback_candidate_gate_accepts_rest_and_safety_feedback():
     assert classify_feedback_candidate("休息时间可以短一点")[0] is True
     assert classify_feedback_candidate("我膝盖疼")[1] == "safety_keyword"
+    assert classify_feedback_candidate("感觉很好,可以多练一会儿") == (True, "feedback_keyword")
 
 
 def test_voice_coach_io_send_publishes_coach_message():
@@ -214,6 +215,22 @@ def test_coach_session_ignores_noise_transcript_during_workout():
         assert session.io.poll_user_input() is None
         transcript_events = [event for event in websocket.events if event.get("type") == "user_transcript"]
         assert transcript_events[-1]["target"] == "ignored_noise"
+
+    asyncio.run(scenario())
+
+
+def test_coach_session_marks_non_keyword_transcript_as_ignored_feedback():
+    async def scenario():
+        websocket = FakeWebSocket()
+        session = coach_server.CoachSession(websocket, coach_server.ServerConfig())
+        session.state = "workout_running"
+
+        await session.route_transcript("今天外面天气不错")
+
+        assert session.io.poll_user_input() is None
+        transcript_events = [event for event in websocket.events if event.get("type") == "user_transcript"]
+        assert transcript_events[-1]["target"] == "ignored_feedback"
+        assert transcript_events[-1]["reason"] == "no_feedback_keyword"
 
     asyncio.run(scenario())
 
