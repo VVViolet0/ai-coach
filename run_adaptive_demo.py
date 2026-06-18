@@ -8,7 +8,7 @@ SAMPLE_PLAN = {
     "rest_between_rounds": 15,
     "exercises": [
         {
-            "exercise": "push_up",
+            "exercise": "wall_push_up",
             "avg_set_time": 10,
             "total_sets": 3,
             "rest_seconds": 10,

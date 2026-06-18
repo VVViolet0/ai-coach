@@ -1,62 +1,74 @@
 [
   {
-    "name": "push_up",
+    "name": "wall_push_up",
+    "target_muscles": ["chest", "arms", "full_body"],
+    "avg_set_time": 30,
+    "intensity_level": "moderate"
+  },
+  {
+    "name": "arm_circles",
+    "target_muscles": ["arms"],
+    "avg_set_time": 30,
+    "intensity_level": "low"
+  },
+  {
+    "name": "standing_punches",
     "target_muscles": ["chest", "arms"],
-    "avg_set_time": 40
+    "avg_set_time": 30,
+    "intensity_level": "moderate"
   },
   {
     "name": "bodyweight_squat",
+    "target_muscles": ["legs", "core"],
+    "avg_set_time": 40,
+    "intensity_level": "high"
+  },
+  {
+    "name": "standing_knee_raise",
+    "target_muscles": ["legs", "core", "full_body"],
+    "avg_set_time": 30,
+    "intensity_level": "moderate"
+  },
+  {
+    "name": "calf_raise",
     "target_muscles": ["legs"],
-    "avg_set_time": 40
+    "avg_set_time": 30,
+    "intensity_level": "low"
   },
   {
-    "name": "plank",
-    "target_muscles": ["core"],
-    "avg_set_time": 40
+    "name": "standing_knee_to_elbow",
+    "target_muscles": ["legs", "core", "full_body"],
+    "avg_set_time": 30,
+    "intensity_level": "low"
   },
   {
-    "name": "mountain_climber",
-    "target_muscles": ["core", "legs", "full_body"],
-    "avg_set_time": 20
+    "name": "standing_reverse_fly",
+    "target_muscles": ["chest", "back", "arms"],
+    "avg_set_time": 30,
+    "intensity_level": "low"
+  },
+  {
+    "name": "standing_y_raise",
+    "target_muscles": ["back", "arms"],
+    "avg_set_time": 30,
+    "intensity_level": "moderate"
+  },
+  {
+    "name": "standing_back_clap",
+    "target_muscles": ["back"],
+    "avg_set_time": 30,
+    "intensity_level": "low"
+  },
+  {
+    "name": "step_jack",
+    "target_muscles": ["full_body", "arms"],
+    "avg_set_time": 30,
+    "intensity_level": "low"
   },
   {
     "name": "jumping_jacks",
     "target_muscles": ["full_body"],
-    "avg_set_time": 20
-  },
-  {
-    "name": "sit_up",
-    "target_muscles": ["core"],
-    "avg_set_time": 20
-  },
-  {
-    "name": "high_knees",
-    "target_muscles": ["legs", "full_body"],
-    "avg_set_time": 30
-  },
-  {
-    "name": "superman_hold",
-    "target_muscles": ["back"],
-    "avg_set_time": 30
-  },
-  {
-    "name": "reverse_snow_angel",
-    "target_muscles": ["back", "arms"],
-    "avg_set_time": 30
-  },
-  {
-    "name": "tricep_dips",
-    "target_muscles": ["arms", "chest"],
-    "avg_set_time": 30
-  },
-  {
-    "name": "bird_dog",
-    "target_muscles": ["core", "back"],
-    "avg_set_time": 30
-  },
-  {
-    "name": "burpees",
-    "target_muscles": ["full_body", "chest"],
-    "avg_set_time": 30
+    "avg_set_time": 20,
+    "intensity_level": "high"
   }
 ]

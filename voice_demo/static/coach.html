@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
@@ -135,11 +135,13 @@
       .dashboard {
         display: grid;
         gap: 14px;
+        align-content: start;
       }
 
       .hero-current {
         display: grid;
         gap: 10px;
+        align-content: start;
         padding: 16px;
         border: 1px solid var(--line);
         border-radius: 8px;
@@ -270,6 +272,7 @@
           <button id="muteBtn" class="secondary" disabled>静音</button>
           <button id="stopBtn" class="secondary" disabled>停止</button>
           <button id="ttsBtn" class="secondary">语音开</button>
+          <button id="metronomeBtn" class="secondary">节拍器开</button>
         </div>
       </header>
 
@@ -292,6 +295,7 @@
             <div class="grid-2">
               <div class="kv"><span>阶段</span><strong id="phase">idle</strong></div>
               <div class="kv"><span>节奏</span><strong id="tempo">normal</strong></div>
+              <div class="kv"><span>节拍</span><strong id="beat">-</strong></div>
               <div class="kv"><span>休息倍率</span><strong id="restMultiplier">1.00</strong></div>
               <div class="kv"><span>组数调整</span><strong id="setDelta">0</strong></div>
             </div>
@@ -324,9 +328,14 @@
       const muteBtn = $("muteBtn");
       const stopBtn = $("stopBtn");
       const ttsBtn = $("ttsBtn");
+      const metronomeBtn = $("metronomeBtn");
 
       let ws = null;
       let audioContext = null;
+      let metronomeAudioContext = null;
+      let metronomeTimer = null;
+      let metronomeEnabled = true;
+      let metronomeHz = 0;
       let mediaStream = null;
       let sourceNode = null;
       let workletNode = null;
@@ -366,6 +375,75 @@
         $(containerId).prepend(entry);
       }
 
+      function formatBeat(payload) {
+        const hz = Number(payload?.effective_beat_hz || 0);
+        const multiplier = Number(payload?.beat_multiplier || 1);
+        if (!hz) {
+          return "无节拍";
+        }
+        return `${hz.toFixed(2)} Hz · ${multiplier.toFixed(2)}x`;
+      }
+
+      function beep() {
+        if (!metronomeEnabled || !metronomeHz) {
+          return;
+        }
+        const AudioCtor = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtor) {
+          return;
+        }
+        if (!metronomeAudioContext) {
+          metronomeAudioContext = new AudioCtor();
+        }
+        const ctx = metronomeAudioContext;
+        if (ctx.state === "suspended") {
+          ctx.resume();
+        }
+        const oscillator = ctx.createOscillator();
+        const gain = ctx.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.08);
+        oscillator.connect(gain);
+        gain.connect(ctx.destination);
+        oscillator.start();
+        oscillator.stop(ctx.currentTime + 0.09);
+      }
+
+      function stopMetronome() {
+        if (metronomeTimer) {
+          window.clearInterval(metronomeTimer);
+          metronomeTimer = null;
+        }
+        metronomeHz = 0;
+      }
+
+      function startMetronome(hz) {
+        const nextHz = Number(hz || 0);
+        if (!metronomeEnabled || nextHz <= 0) {
+          stopMetronome();
+          return;
+        }
+        if (Math.abs(nextHz - metronomeHz) < 0.001 && metronomeTimer) {
+          return;
+        }
+        stopMetronome();
+        metronomeHz = nextHz;
+        beep();
+        metronomeTimer = window.setInterval(beep, Math.max(250, 1000 / metronomeHz));
+      }
+
+      function updateMetronomeForPhase(payload) {
+        setText("beat", formatBeat(payload));
+        if (payload.phase === "active_set") {
+          startMetronome(payload.effective_beat_hz);
+        } else {
+          stopMetronome();
+        }
+      }
+
       function sendSpeechDone(speechId) {
         if (speechId) {
           sendControl("speech_done", { speech_id: speechId });
@@ -378,6 +456,21 @@
           return;
         }
         ttsQueue.push({ text, speechId });
+        playNextSpeech();
+      }
+
+      function speakUrgent(text) {
+        if (!ttsEnabled || !("speechSynthesis" in window) || !text) {
+          return;
+        }
+        ttsQueue.splice(0).forEach((item) => sendSpeechDone(item.speechId));
+        if (activeSpeechId) {
+          sendSpeechDone(activeSpeechId);
+        }
+        activeSpeechId = "";
+        speaking = false;
+        window.speechSynthesis.cancel();
+        ttsQueue.unshift({ text, speechId: "" });
         playNextSpeech();
       }
 
@@ -432,7 +525,7 @@
               <div class="exercise-name">${exercise.display_name || exercise.exercise_name || exercise.exercise || "-"}</div>
               <div class="exercise-meta">${exercise.total_sets || "-"} 组 · 休息 ${exercise.rest_seconds || "-"} 秒</div>
             </div>
-            <div class="exercise-meta">平均每组 ${exercise.avg_set_time || "-"} 秒 · 节奏 ${exercise.demo_speed || "-"}</div>
+            <div class="exercise-meta">平均每组 ${exercise.avg_set_time || "-"} 秒 · 默认节拍 ${exercise.default_beat_hz ? `${exercise.default_beat_hz} Hz` : "无"}</div>
             <ol class="instructions">${(exercise.instructions || []).map((step) => `<li>${step}</li>`).join("")}</ol>
           `;
           $("exerciseList").appendChild(item);
@@ -491,6 +584,12 @@
           details.push(`休息倍率 ${beforeRestMultiplier.toFixed(2)} → ${afterRestMultiplier.toFixed(2)}`);
         }
 
+        const beforeBeatMultiplier = Number(payload.before_beat_multiplier ?? 1);
+        const afterBeatMultiplier = Number(payload.after_beat_multiplier ?? beforeBeatMultiplier);
+        if (Math.abs(beforeBeatMultiplier - afterBeatMultiplier) > 0.001) {
+          details.push(`节拍倍率 ${beforeBeatMultiplier.toFixed(2)} → ${afterBeatMultiplier.toFixed(2)}`);
+        }
+
         const beforeSetDelta = Number(payload.before_set_delta ?? 0);
         const afterSetDelta = Number(payload.after_set_delta ?? beforeSetDelta);
         if (beforeSetDelta !== afterSetDelta) {
@@ -525,21 +624,27 @@
         } else if (eventType === "set_start") {
           setText("set", `${payload.current_set}/${payload.total_sets}`);
           setText("tempo", payload.tempo_cue || "normal");
+          setText("beat", formatBeat(payload));
         } else if (eventType === "phase_start") {
           setText("phase", payload.phase);
           setText("countdown", payload.seconds);
+          updateMetronomeForPhase(payload);
         } else if (eventType === "phase_tick") {
           setText("phase", payload.phase);
           setText("countdown", payload.seconds_remaining);
           setText("tempo", payload.tempo_cue || "normal");
+          updateMetronomeForPhase(payload);
           setText("restMultiplier", Number(payload.rest_multiplier || 1).toFixed(2));
           setText("setDelta", payload.set_delta || 0);
         } else if (eventType === "rest_start") {
+          stopMetronome();
           setText("countdown", payload.seconds);
         } else if (eventType === "feedback_received") {
           addRecord("feedbackRecords", "用户反馈", payload.text, payload.phase || "");
         } else if (eventType === "feedback_understood") {
           addRecord("feedbackRecords", "反馈理解", `${(payload.actions || []).join(", ") || "no_action"} · confidence ${payload.confidence}`, payload.reason || "");
+        } else if (eventType === "urgent_coach_reply") {
+          speakUrgent(payload.text || "");
         } else if (eventType === "feedback_understanding_failed") {
           addRecord("feedbackRecords", "反馈未处理", payload.raw_text || "", payload.error_summary || "");
         } else if (eventType === "feedback_ignored") {
@@ -555,6 +660,7 @@
         } else if (eventType === "log_saved") {
           addRecord("adjustmentRecords", "日志已保存", payload.path);
         } else if (eventType === "session_end") {
+          stopMetronome();
           setText("session", "ended");
           addRecord("adjustmentRecords", "训练结束", payload.reason || "");
         }
@@ -630,6 +736,7 @@
         };
 
         ws.onclose = () => {
+          stopMetronome();
           setText("connection", "closed");
           startBtn.disabled = false;
           muteBtn.disabled = true;
@@ -639,6 +746,7 @@
       }
 
       async function stop() {
+        stopMetronome();
         sendControl("stop");
         sendSpeechDone(activeSpeechId);
         ttsQueue.splice(0).forEach((item) => sendSpeechDone(item.speechId));
@@ -658,6 +766,13 @@
 
       startBtn.addEventListener("click", start);
       stopBtn.addEventListener("click", stop);
+      metronomeBtn.addEventListener("click", () => {
+        metronomeEnabled = !metronomeEnabled;
+        metronomeBtn.textContent = metronomeEnabled ? "节拍器开" : "节拍器关";
+        if (!metronomeEnabled) {
+          stopMetronome();
+        }
+      });
       muteBtn.addEventListener("click", () => {
         muted = !muted;
         muteBtn.textContent = muted ? "取消静音" : "静音";

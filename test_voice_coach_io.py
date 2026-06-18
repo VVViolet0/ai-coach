@@ -5,10 +5,15 @@ import time
 
 import voice_demo.coach_server as coach_server
 from voice_demo.coach_server import (
+    A_CONDITION_SPEECH,
+    B_CONDITION_SPEECH,
+    EXPERIMENT_PREPARATION_SPEECH,
     INITIAL_PLANNING_SPEECH,
+    INTERACTIVE_CONDITION_SPEECH,
     VoiceCoachIO,
     classify_coach_message,
     classify_feedback_candidate,
+    condition_instruction_for,
 )
 from voice_demo.server import WhisperTranscriber
 
@@ -47,6 +52,11 @@ def test_feedback_candidate_gate_accepts_rest_and_safety_feedback():
     assert classify_feedback_candidate("休息时间可以短一点")[0] is True
     assert classify_feedback_candidate("我膝盖疼")[1] == "safety_keyword"
     assert classify_feedback_candidate("感觉很好,可以多练一会儿") == (True, "feedback_keyword")
+
+
+def test_feedback_candidate_gate_accepts_training_context_for_llm_fallback():
+    assert classify_feedback_candidate("这个安排有点怪") == (True, "feedback_context_candidate")
+    assert classify_feedback_candidate("缩短深蹲的训练时长") == (True, "feedback_keyword")
 
 
 def test_voice_coach_io_send_publishes_coach_message():
@@ -109,6 +119,47 @@ def test_voice_coach_io_send_event_publishes_runtime_event():
     io.send_event("phase_tick", {"seconds_remaining": 3})
 
     assert events == [{"type": "runtime_event", "event_type": "phase_tick", "payload": {"seconds_remaining": 3}}]
+
+
+def test_voice_coach_io_can_send_structured_condition_instruction():
+    events = []
+    io = VoiceCoachIO(events.append)
+
+    io.send_coach_message(A_CONDITION_SPEECH, category="condition_instruction")
+
+    speech_id = events[0].pop("speech_id")
+    assert speech_id == "speech-1"
+    assert events[0]["type"] == "coach_message"
+    assert events[0]["category"] == "condition_instruction"
+    assert events[0]["speak"] is True
+    assert events[0]["speech_text"] == A_CONDITION_SPEECH
+
+
+def test_voice_coach_io_logs_transcript_and_links_feedback_context():
+    io = VoiceCoachIO(lambda _event: None)
+    transcript_id = io.log_transcript(
+        {
+            "text": "too hard",
+            "latency_ms": 1200,
+            "asr_ms": 1100,
+            "segment_ms": 800,
+            "target": "pending_route",
+        }
+    )
+    io.update_transcript_route(transcript_id, "feedback", "feedback_keyword")
+    io.enqueue_user_text("too hard", transcript_id=transcript_id)
+
+    context = io.consume_feedback_context(io.poll_user_input())
+    transcript = io.get_transcript_log()[0]
+
+    assert context["transcript_id"] == transcript_id
+    assert context["feedback_id"]
+    assert context["input_method"] == "asr_whisper"
+    assert context["submit_method"] == "vad_auto"
+    assert transcript["transcript_id"] == transcript_id
+    assert transcript["target"] == "feedback"
+    assert transcript["route_reason"] == "feedback_keyword"
+    assert transcript["timestamp"]
 
 
 def test_classify_coach_message_filters_non_speech_messages():
@@ -219,6 +270,188 @@ def test_coach_session_ignores_noise_transcript_during_workout():
     asyncio.run(scenario())
 
 
+def test_experiment_session_prepares_once_then_runs_condition(monkeypatch):
+    observed = {"prepare_calls": 0, "run_calls": []}
+
+    class FakeExperimentRunner:
+        def __init__(self, **kwargs):
+            observed["runner_kwargs"] = kwargs
+
+        def prepare(self, participant_id, initial_request):
+            observed["prepare_calls"] += 1
+            observed["participant_id"] = participant_id
+            observed["initial_request"] = initial_request
+            return {
+                "participant_id": participant_id,
+                "experiment_id": "exp-1",
+                "canonical_intent_id": "intent-1",
+                "personalized_plan_id": "plan-1",
+                "canonical_intent": {"session_goal": "general_fitness", "duration_minutes": 6},
+                "personalized_plan": {"rounds": 1, "rest_between_rounds": 0, "exercises": []},
+            }
+
+        def run_prepared_condition(self, prepared_experiment, condition_id, io, condition_instruction="", close_io=True):
+            observed["run_calls"].append(
+                {
+                    "condition_id": condition_id,
+                    "experiment_id": prepared_experiment["experiment_id"],
+                    "condition_instruction": condition_instruction,
+                    "close_io": close_io,
+                }
+            )
+            return {
+                "condition_id": condition_id,
+                "experiment_id": prepared_experiment["experiment_id"],
+                "session_end_reason": "fake_done",
+            }
+
+    async def scenario():
+        monkeypatch.setattr(coach_server, "ExperimentRunner", FakeExperimentRunner)
+        websocket = FakeWebSocket()
+        config = coach_server.ServerConfig()
+        config.experiment_mode = True
+        session = coach_server.CoachSession(websocket, config)
+        session.participant_id = "P001"
+
+        await session.route_transcript("我想做全身训练")
+        session.coach_thread.join(timeout=2)
+        await asyncio.sleep(0.05)
+
+        assert observed["prepare_calls"] == 1
+        assert observed["participant_id"] == "P001"
+        assert session.state == "prepared"
+        assert session.prepared_experiment["experiment_id"] == "exp-1"
+        assert any(event.get("type") == "experiment_prepared" for event in websocket.events)
+
+        session.start_experiment_condition("B")
+        deadline = time.time() + 2
+        instruction_event = None
+        while time.time() < deadline:
+            await asyncio.sleep(0.02)
+            instruction_event = next(
+                (
+                    event for event in websocket.events
+                    if event.get("type") == "coach_message"
+                    and event.get("category") == "condition_instruction"
+                ),
+                None,
+            )
+            if instruction_event:
+                break
+        assert instruction_event is not None
+        session.io.mark_speech_done(instruction_event["speech_id"])
+        session.coach_thread.join(timeout=2)
+        await asyncio.sleep(0.05)
+
+        assert observed["run_calls"] == [
+            {
+                "condition_id": "B",
+                "experiment_id": "exp-1",
+                "condition_instruction": B_CONDITION_SPEECH,
+                "close_io": False,
+            }
+        ]
+        assert any(event.get("type") == "condition_summary" for event in websocket.events)
+        assert instruction_event["speech_text"] == B_CONDITION_SPEECH
+        assert session.state == "prepared"
+
+    asyncio.run(scenario())
+
+
+def test_experiment_preparation_uses_experiment_specific_speech(monkeypatch):
+    class FakeExperimentRunner:
+        def __init__(self, **kwargs):
+            pass
+
+        def prepare(self, participant_id, initial_request):
+            return {
+                "participant_id": participant_id,
+                "experiment_id": "exp-1",
+                "canonical_intent_id": "intent-1",
+                "personalized_plan_id": "plan-1",
+                "canonical_intent": {"session_goal": "general_fitness", "duration_minutes": 6},
+                "personalized_plan": {"rounds": 1, "rest_between_rounds": 0, "exercises": []},
+            }
+
+    async def scenario():
+        monkeypatch.setattr(coach_server, "ExperimentRunner", FakeExperimentRunner)
+        websocket = FakeWebSocket()
+        config = coach_server.ServerConfig()
+        config.experiment_mode = True
+        session = coach_server.CoachSession(websocket, config)
+        session.participant_id = "P001"
+
+        await session.route_transcript("我想做全身训练")
+        session.coach_thread.join(timeout=2)
+        await asyncio.sleep(0.05)
+
+        prep_messages = [
+            event for event in websocket.events
+            if event.get("type") == "coach_message" and event.get("category") == "experiment_preparation"
+        ]
+        assert prep_messages[-1]["speech_text"] == EXPERIMENT_PREPARATION_SPEECH
+        assert not any(
+            event.get("type") == "coach_message"
+            and event.get("category") == "initial_planning"
+            and event.get("speech_text") == INITIAL_PLANNING_SPEECH
+            for event in websocket.events
+        )
+
+    asyncio.run(scenario())
+
+
+def test_experiment_text_submit_prepares_with_input_metadata(monkeypatch):
+    observed = {}
+
+    class FakeExperimentRunner:
+        def __init__(self, **kwargs):
+            pass
+
+        def prepare(self, participant_id, initial_request):
+            observed["participant_id"] = participant_id
+            observed["initial_request"] = initial_request
+            return {
+                "participant_id": participant_id,
+                "experiment_id": "exp-text",
+                "canonical_intent_id": "intent-text",
+                "personalized_plan_id": "plan-text",
+                "canonical_intent": {"session_goal": "general_fitness", "duration_minutes": 6},
+                "personalized_plan": {"rounds": 1, "rest_between_rounds": 0, "exercises": []},
+            }
+
+    async def scenario():
+        monkeypatch.setattr(coach_server, "ExperimentRunner", FakeExperimentRunner)
+        websocket = FakeWebSocket()
+        config = coach_server.ServerConfig()
+        config.experiment_mode = True
+        session = coach_server.CoachSession(websocket, config)
+        session.participant_id = "P-TEXT"
+
+        await session.submit_text_transcript(
+            "我今天有点累，想做一个轻松的全身训练",
+            input_method="text_win_h",
+            submit_method="manual",
+        )
+        session.coach_thread.join(timeout=2)
+        await asyncio.sleep(0.05)
+
+        assert observed["participant_id"] == "P-TEXT"
+        assert observed["initial_request"] == "我今天有点累，想做一个轻松的全身训练"
+        transcript = session.io.get_transcript_log()[0]
+        assert transcript["input_method"] == "text_win_h"
+        assert transcript["submit_method"] == "manual"
+        assert transcript["latency_ms"] == 0
+        assert transcript["target"] == "initial_intent"
+
+    asyncio.run(scenario())
+
+
+def test_condition_instruction_copy_by_condition():
+    assert condition_instruction_for("A") == A_CONDITION_SPEECH
+    assert condition_instruction_for("B") == B_CONDITION_SPEECH
+    assert condition_instruction_for("C") == INTERACTIVE_CONDITION_SPEECH
+
+
 def test_coach_session_marks_non_keyword_transcript_as_ignored_feedback():
     async def scenario():
         websocket = FakeWebSocket()
@@ -231,6 +464,77 @@ def test_coach_session_marks_non_keyword_transcript_as_ignored_feedback():
         transcript_events = [event for event in websocket.events if event.get("type") == "user_transcript"]
         assert transcript_events[-1]["target"] == "ignored_feedback"
         assert transcript_events[-1]["reason"] == "no_feedback_keyword"
+
+    asyncio.run(scenario())
+
+
+def test_experiment_condition_b_ignores_workout_feedback():
+    async def scenario():
+        websocket = FakeWebSocket()
+        session = coach_server.CoachSession(websocket, coach_server.ServerConfig())
+        session.state = "workout_running"
+        session.experiment_condition_id = "B"
+
+        await session.route_transcript("too hard")
+
+        assert session.io.poll_user_input() is None
+        transcript_events = [event for event in websocket.events if event.get("type") == "user_transcript"]
+        assert transcript_events[-1]["target"] == "ignored_feedback"
+        assert transcript_events[-1]["reason"] == "feedback_disabled_for_condition"
+
+    asyncio.run(scenario())
+
+
+def test_experiment_condition_c_accepts_direct_chinese_text_feedback():
+    async def scenario():
+        websocket = FakeWebSocket()
+        session = coach_server.CoachSession(websocket, coach_server.ServerConfig())
+        session.state = "workout_running"
+        session.experiment_condition_id = "C"
+
+        await session.submit_text_transcript("可以停了", input_method="text_win_h", submit_method="auto_idle")
+
+        assert session.io.poll_user_input() == "可以停了"
+        transcript = session.io.get_transcript_log()[0]
+        transcript_events = [event for event in websocket.events if event.get("type") == "user_transcript"]
+        assert transcript["input_method"] == "text_win_h"
+        assert transcript["submit_method"] == "auto_idle"
+        assert transcript["route_reason"] == "safety_keyword"
+        assert transcript_events[-1]["target"] == "feedback"
+
+    asyncio.run(scenario())
+
+
+def test_confirmation_word_routes_to_executor_even_when_short():
+    async def scenario():
+        websocket = FakeWebSocket()
+        session = coach_server.CoachSession(websocket, coach_server.ServerConfig())
+        session.state = "workout_running"
+        session.experiment_condition_id = "C"
+        session.io.set_pending_confirmation("stop")
+
+        await session.route_transcript("是的")
+
+        assert session.io.poll_user_input() == "是的"
+        transcript_events = [event for event in websocket.events if event.get("type") == "user_transcript"]
+        assert transcript_events[-1]["target"] == "feedback"
+        assert transcript_events[-1]["reason"] == "confirmation"
+
+    asyncio.run(scenario())
+
+
+def test_experiment_end_condition_requests_current_condition_stop():
+    async def scenario():
+        websocket = FakeWebSocket()
+        config = coach_server.ServerConfig()
+        config.experiment_mode = True
+        session = coach_server.CoachSession(websocket, config)
+        session.state = "workout_running"
+        session.experiment_condition_id = "C"
+
+        assert session.request_current_condition_stop() is True
+        assert session.io.consume_condition_stop_request() == "manual_condition_stop"
+        assert session.state == "workout_running"
 
     asyncio.run(scenario())
 

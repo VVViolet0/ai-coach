@@ -4,12 +4,18 @@ import threading
 import time
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Protocol, Tuple, Union
+from uuid import uuid4
 
 from feedback_understanding import (
     FeedbackUnderstandingFailure,
     FeedbackUnderstandingResult,
+    classify_confirmation_text,
+    is_safety_feedback_text,
+    normalize_confirmation_text,
+    understand_feedback_fast_path,
     understand_feedback,
 )
 
@@ -21,6 +27,9 @@ MAX_SETS = 8
 PRE_EXERCISE_PREVIEW_WAIT_SECONDS = 3
 MIN_REST_MULTIPLIER = 0.5
 MAX_REST_MULTIPLIER = 2.0
+MIN_BEAT_MULTIPLIER = 0.6
+MAX_BEAT_MULTIPLIER = 1.4
+DEFAULT_BEAT_HZ = 0.75
 MIN_SET_DELTA = -3
 MAX_SET_DELTA = 3
 LOW_FEEDBACK_CONFIDENCE = 0.4
@@ -37,59 +46,11 @@ NO_STATE_DERIVED_ACTION_INTENTS = {
 }
 SILENT_NO_ACTION_INTENTS = {"unknown", "neutral"}
 NO_ACTIONS = {"ask_clarification", "no_action"}
-YES_WORDS = {
-    "yes",
-    "y",
-    "continue",
-    "go",
-    "ok",
-    "okay",
-    "是",
-    "对",
-    "继续",
-    "可以",
-    "好的",
-    "好",
-    "没问题",
-    "沒問題",
-    "行",
-    "yeah",
-    "yep",
-    "耶",
-}
-NO_WORDS = {
-    "no",
-    "n",
-    "stop",
-    "quit",
-    "end",
-    "不",
-    "不要",
-    "停止",
-    "结束",
-    "結束",
-    "停",
-    "停下",
-    "不继续",
-    "不繼續",
-    "不用",
-    "nope",
-    "否",
-}
-CONFIRMATION_STRIP_CHARS = " \t\r\n,，.。!！?？;；:："
 EXERCISE_DEMO_LIBRARY_PATH = Path("libraries/exercise_demo_library.json")
-SAFETY_FEEDBACK_TERMS = (
-    "疼",
-    "痛",
-    "不舒服",
-    "停止",
-    "结束",
-    "停",
-    "stop",
-    "pain",
-    "hurt",
-    "quit",
-)
+
+
+def _timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class ExecutorIO(Protocol):
@@ -130,6 +91,7 @@ class FeedbackUnderstander(Protocol):
 class AdjustmentAction:
     action_type: str
     rest_multiplier: float = 1.0
+    beat_multiplier: float = 1.0
     set_delta: int = 0
     tempo_cue: Optional[str] = None
     reason: str = ""
@@ -168,6 +130,9 @@ class UserConditionState:
 @dataclass
 class SessionState:
     workout_plan: Dict
+    condition_id: str = ""
+    experiment_metadata: Dict = field(default_factory=dict)
+    feedback_enabled: bool = True
     initial_workout_plan: Dict = field(default_factory=dict)
     initial_intent: Dict = field(default_factory=dict)
     exercise_library: List[Dict] = field(default_factory=list)
@@ -177,6 +142,7 @@ class SessionState:
     phase: str = "idle"
     seconds_remaining: int = 0
     rest_multiplier: float = 1.0
+    beat_multiplier: float = 1.0
     set_delta: int = 0
     tempo_cue: str = "normal"
     is_active: bool = True
@@ -188,9 +154,41 @@ class SessionState:
     conversation_log: List[Dict] = field(default_factory=list)
     adjustment_log: List[Dict] = field(default_factory=list)
     condition_log: List[Dict] = field(default_factory=list)
+    transcript_log: List[Dict] = field(default_factory=list)
+    feedback_trace: List[Dict] = field(default_factory=list)
+    active_feedback_id: str = ""
+    feedback_sequence: int = 0
+    session_started_at: str = ""
+    session_ended_at: str = ""
+    actual_duration_seconds: float = 0.0
 
     def log_event(self, event_type: str, detail: Dict) -> None:
-        self.event_log.append({"type": event_type, "detail": detail})
+        self.event_log.append(
+            {"condition_id": self.condition_id, "timestamp": _timestamp(), "type": event_type, "detail": detail}
+        )
+
+    def log_conversation(self, record: Dict) -> None:
+        self.conversation_log.append({"condition_id": self.condition_id, "timestamp": _timestamp(), **record})
+
+    def log_adjustment(self, record: Dict) -> None:
+        self.adjustment_log.append(
+            {
+                "condition_id": self.condition_id,
+                "timestamp": _timestamp(),
+                "feedback_id": self.active_feedback_id,
+                **record,
+            }
+        )
+
+    def log_condition(self, record: Dict) -> None:
+        self.condition_log.append(
+            {
+                "condition_id": self.condition_id,
+                "timestamp": _timestamp(),
+                "feedback_id": self.active_feedback_id,
+                **record,
+            }
+        )
 
 
 class RealClock:
@@ -240,6 +238,16 @@ def load_exercise_demo_library(path: str | Path = EXERCISE_DEMO_LIBRARY_PATH) ->
     return payload
 
 
+def _normalize_beat_hz(value: object, fallback: float = DEFAULT_BEAT_HZ) -> float:
+    try:
+        beat_hz = float(value)
+    except (TypeError, ValueError):
+        beat_hz = fallback
+    if beat_hz <= 0:
+        return 0.0
+    return round(max(0.2, min(2.0, beat_hz)), 3)
+
+
 def translate_plan_for_demo(workout_plan: Dict) -> Dict:
     exercise_demo_library = load_exercise_demo_library()
     demo_plan = {
@@ -257,6 +265,8 @@ def translate_plan_for_demo(workout_plan: Dict) -> Dict:
                 "instructions": ["保持动作安全、稳定、受控。"],
             },
         )
+        default_beat_hz = _normalize_beat_hz(details.get("default_beat_hz"))
+        beat_source = "exercise_demo_library" if "default_beat_hz" in details else "fallback"
 
         demo_exercise = {
             "exercise_name": name,
@@ -265,6 +275,9 @@ def translate_plan_for_demo(workout_plan: Dict) -> Dict:
             "avg_set_time": ex["avg_set_time"],
             "total_sets": ex["total_sets"],
             "rest_seconds": ex["rest_seconds"],
+            "rest_after_exercise_seconds": int(ex.get("rest_after_exercise_seconds", 0)),
+            "default_beat_hz": default_beat_hz,
+            "beat_source": beat_source,
         }
         demo_plan["exercises"].append(demo_exercise)
 
@@ -294,6 +307,12 @@ class RuleFirstDecisionEngine:
 
 
 class FeedbackWorker:
+    """Runs slow feedback understanding off the timing loop.
+
+    Fast-rule feedback is handled synchronously in submit(); only ambiguous
+    messages wait for the worker thread and LLM fallback.
+    """
+
     def __init__(
         self,
         state: SessionState,
@@ -307,17 +326,33 @@ class FeedbackWorker:
         self._decision_engine = decision_engine
         self._feedback_understander = feedback_understander
         self._feedback_model = feedback_model
-        self._messages: "queue.Queue[Optional[Tuple[str, float]]]" = queue.Queue()
+        self._messages: "queue.Queue[Optional[Tuple[str, float, int]]]" = queue.Queue()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def submit(self, message: str) -> None:
-        if not _is_safety_feedback_text(message):
-            self._drop_pending_normal_feedback()
-        self._messages.put((message, time.time()))
+        self._drop_pending_normal_feedback()
+        self._state.feedback_sequence += 1
+        sequence_id = self._state.feedback_sequence
+        # Clear, high-priority feedback should affect the live set immediately.
+        # Ambiguous feedback is queued for the slower LLM fallback and protected by sequence id.
+        if understand_feedback_fast_path(message) is not None:
+            _emit_runtime_event(self._io, "feedback_processing_start", {"text": message})
+            _handle_user_message(
+                message,
+                self._state,
+                self._io,
+                self._decision_engine,
+                self._feedback_understander,
+                self._feedback_model,
+                feedback_sequence_id=sequence_id,
+            )
+            _emit_runtime_event(self._io, "feedback_processing_end", {"text": message})
+            return
+        self._messages.put((message, time.time(), sequence_id))
 
     def _drop_pending_normal_feedback(self) -> None:
-        kept: List[Tuple[str, float]] = []
+        kept: List[Tuple[str, float, int]] = []
         while True:
             try:
                 item = self._messages.get_nowait()
@@ -326,9 +361,9 @@ class FeedbackWorker:
             if item is None:
                 kept.append(item)
                 continue
-            message, submitted_at = item
-            if _is_safety_feedback_text(message):
-                kept.append((message, submitted_at))
+            message, submitted_at, sequence_id = item
+            if is_safety_feedback_text(message):
+                kept.append((message, submitted_at, sequence_id))
         for item in kept:
             self._messages.put(item)
 
@@ -341,8 +376,8 @@ class FeedbackWorker:
             item = self._messages.get()
             if item is None:
                 return
-            message, submitted_at = item
-            if time.time() - submitted_at > PENDING_FEEDBACK_TTL_SECONDS and not _is_safety_feedback_text(message):
+            message, submitted_at, sequence_id = item
+            if time.time() - submitted_at > PENDING_FEEDBACK_TTL_SECONDS and not is_safety_feedback_text(message):
                 _emit_runtime_event(
                     self._io,
                     "feedback_ignored",
@@ -362,21 +397,13 @@ class FeedbackWorker:
                 self._decision_engine,
                 self._feedback_understander,
                 self._feedback_model,
+                feedback_sequence_id=sequence_id,
             )
             _emit_runtime_event(self._io, "feedback_processing_end", {"text": message})
 
 
 def _clamp_int(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
-
-
-def _normalize_confirmation_text(text: str) -> str:
-    return text.strip().lower().strip(CONFIRMATION_STRIP_CHARS)
-
-
-def _is_safety_feedback_text(text: str) -> bool:
-    lowered = text.strip().lower()
-    return any(term in lowered for term in SAFETY_FEEDBACK_TERMS)
 
 
 def _emit_runtime_event(io: ExecutorIO, event_type: str, payload: Dict) -> None:
@@ -429,34 +456,92 @@ def _build_feedback_state_snapshot(state: SessionState) -> Dict:
     return {
         "phase": state.phase,
         "current_exercise_name": current_exercise_name,
-        "user_condition": {
-            "fatigue_level": state.user_condition.fatigue_level,
-            "difficulty_level": state.user_condition.difficulty_level,
-            "preference": state.user_condition.preference,
-        },
-        "tempo_cue": state.tempo_cue,
-        "set_delta": state.set_delta,
-        "rest_multiplier": state.rest_multiplier,
     }
 
 
-def _send_coach_reply(io: ExecutorIO, state: SessionState, reply: str) -> None:
+def _structured_understanding_state(understanding: FeedbackUnderstandingResult) -> Dict:
+    return {
+        "fatigue_level": understanding.fatigue_level,
+        "difficulty_level": understanding.difficulty_level,
+        "preference": understanding.preference,
+        "safety": understanding.safety,
+        "confidence": understanding.confidence,
+        "actions": understanding.actions,
+    }
+
+
+def _current_beat_payload(state: SessionState, *, active_phase: Optional[bool] = None) -> Dict[str, float]:
+    default_beat_hz = DEFAULT_BEAT_HZ
+    exercises = state.workout_plan.get("exercises") or []
+    if exercises and 0 <= state.current_exercise < len(exercises):
+        default_beat_hz = _normalize_beat_hz(exercises[state.current_exercise].get("default_beat_hz"))
+    beat_multiplier = round(max(MIN_BEAT_MULTIPLIER, min(MAX_BEAT_MULTIPLIER, state.beat_multiplier)), 3)
+    if active_phase is None:
+        active_phase = state.phase == "active_set"
+    effective_beat_hz = round(default_beat_hz * beat_multiplier, 3) if active_phase else 0.0
+    return {
+        "default_beat_hz": default_beat_hz,
+        "beat_multiplier": beat_multiplier,
+        "effective_beat_hz": effective_beat_hz,
+    }
+
+
+def _send_coach_reply(io: ExecutorIO, state: SessionState, reply: str, *, urgent: bool = False) -> None:
     if not reply:
         return
     io.send(f"[Coach] {reply}")
-    state.conversation_log.append({"role": "coach", "content": reply})
+    if urgent:
+        _emit_runtime_event(io, "urgent_coach_reply", {"text": reply})
+    state.log_conversation({"role": "coach", "content": reply})
 
 
 def _handle_stop_confirmation(cleaned: str, state: SessionState, io: ExecutorIO) -> bool:
-    lowered = _normalize_confirmation_text(cleaned)
-    if lowered in YES_WORDS:
+    normalized = normalize_confirmation_text(cleaned)
+    clear_confirmation = getattr(io, "clear_pending_confirmation", None)
+    stop_words = {
+        "是",
+        "是的",
+        "对",
+        "对的",
+        "停止",
+        "停",
+        "停下",
+        "结束",
+        "停止训练",
+        "结束训练",
+        "结束整个训练",
+        "可以停了",
+        "yes",
+        "y",
+        "stop",
+        "quit",
+        "end",
+    }
+    continue_words = {
+        "否",
+        "不",
+        "不是",
+        "不要",
+        "不停止",
+        "不用",
+        "继续",
+        "继续训练",
+        "no",
+        "n",
+        "continue",
+    }
+    if normalized in stop_words:
+        if callable(clear_confirmation):
+            clear_confirmation()
         state.awaiting_stop_confirmation = False
         state.is_active = False
         state.end_reason = "user_requested_stop"
         io.send("好的，现在停止训练。")
         state.log_event("stop_confirmation", {"decision": "stop"})
         return True
-    if lowered in NO_WORDS:
+    if normalized in continue_words:
+        if callable(clear_confirmation):
+            clear_confirmation()
         state.awaiting_stop_confirmation = False
         io.send("好的，我们继续。如果需要，我可以随时降低强度。")
         state.log_event("stop_confirmation", {"decision": "continue"})
@@ -468,13 +553,18 @@ def _handle_stop_confirmation(cleaned: str, state: SessionState, io: ExecutorIO)
 
 
 def _handle_pain_confirmation(cleaned: str, state: SessionState, io: ExecutorIO) -> bool:
-    lowered = _normalize_confirmation_text(cleaned)
-    if lowered in YES_WORDS:
+    confirmation = classify_confirmation_text(cleaned)
+    clear_confirmation = getattr(io, "clear_pending_confirmation", None)
+    if confirmation == "yes":
+        if callable(clear_confirmation):
+            clear_confirmation()
         state.awaiting_pain_confirmation = False
         io.send("好的，我们用更轻、更安全的节奏继续。")
         state.log_event("pain_confirmation", {"decision": "continue"})
         return True
-    if lowered in NO_WORDS:
+    if confirmation == "no":
+        if callable(clear_confirmation):
+            clear_confirmation()
         state.awaiting_pain_confirmation = False
         state.is_active = False
         state.end_reason = "user_stopped_after_pain"
@@ -530,7 +620,7 @@ def _apply_condition_from_understanding(
         "understanding_channel": understanding.llm_channel,
         "phase": state.phase,
     }
-    state.condition_log.append(condition_record)
+    state.log_condition(condition_record)
     state.log_event("condition_updated", condition_record)
     return changed
 
@@ -540,6 +630,8 @@ def _action_to_adjustment(
     state: SessionState,
     understanding: FeedbackUnderstandingResult,
 ) -> Optional[AdjustmentAction]:
+    # The LLM or fast rule selects action names; the executor owns the concrete
+    # workout changes and safety bounds behind those names.
     reason = understanding.reason or action
 
     if action == "decrease_rest":
@@ -581,6 +673,7 @@ def _action_to_adjustment(
     if action == "slow_tempo":
         return AdjustmentAction(
             action_type="adjust_intensity",
+            beat_multiplier=0.8,
             tempo_cue="slower",
             reason=reason,
             rule_id="action_slow_tempo",
@@ -590,6 +683,7 @@ def _action_to_adjustment(
     if action == "speed_up_tempo":
         return AdjustmentAction(
             action_type="adjust_intensity",
+            beat_multiplier=1.2,
             tempo_cue="faster",
             reason=reason,
             rule_id="action_speed_up_tempo",
@@ -601,6 +695,7 @@ def _action_to_adjustment(
             action_type="adjust_intensity",
             set_delta=-1,
             rest_multiplier=1.25,
+            beat_multiplier=0.8,
             tempo_cue="slower",
             reason=reason,
             rule_id="action_decrease_difficulty",
@@ -612,6 +707,7 @@ def _action_to_adjustment(
             action_type="adjust_intensity",
             set_delta=1,
             rest_multiplier=0.85,
+            beat_multiplier=1.2,
             tempo_cue="faster",
             reason=reason,
             rule_id="action_increase_difficulty",
@@ -651,14 +747,31 @@ def _build_decision_from_actions(
     state: SessionState,
     decision_engine: DecisionEngine,
 ) -> DecisionResult:
+    # Safety decisions are handled before normal action mapping so stop/pain
+    # cannot be diluted by lower-priority actions.
     actions = understanding.actions
+
+    if "confirm_stop_workout" in actions:
+        return DecisionResult(
+            intent="stop",
+            coach_reply=understanding.reply or "你是想结束整个训练吗？请回答“是”或“否”。",
+            actions=[],
+            requires_confirmation=True,
+            confirmation_type="stop",
+        )
 
     if understanding.safety == "stop_request" or "stop_workout" in actions:
         return DecisionResult(
             intent="stop",
-            coach_reply=understanding.reply or "我听到你可能想停止训练。现在要停止吗？请回答“是”或“否”。",
-            requires_confirmation=True,
-            confirmation_type="stop",
+            coach_reply=understanding.reply or "好的，现在停止训练。",
+            actions=[
+                AdjustmentAction(
+                    action_type="stop",
+                    reason="user_requested_stop",
+                    rule_id="action_stop_workout",
+                    state_reason="safety=stop_request",
+                )
+            ],
         )
 
     if understanding.safety == "pain":
@@ -667,11 +780,12 @@ def _build_decision_from_actions(
             coach_reply=understanding.reply or "我听到你有疼痛或不适。我已经降低强度。你还要继续吗？请回答“继续”或“停止”。",
             actions=[
                 AdjustmentAction(
-                    action_type="adjust_intensity",
-                    set_delta=-1,
-                    rest_multiplier=1.25,
-                    tempo_cue="slower",
-                    reason="pain_auto_downshift",
+                action_type="adjust_intensity",
+                set_delta=-1,
+                rest_multiplier=1.25,
+                beat_multiplier=0.8,
+                tempo_cue="slower",
+                reason="pain_auto_downshift",
                     rule_id="pain_safety_downshift",
                     state_reason="safety=pain",
                 )
@@ -758,6 +872,7 @@ def _derive_state_actions(state: SessionState) -> List[AdjustmentAction]:
                 action_type="adjust_intensity",
                 set_delta=-1,
                 rest_multiplier=1.2,
+                beat_multiplier=0.8,
                 tempo_cue="slower",
                 reason="state_high_fatigue_or_hard",
                 rule_id="state_hard_downshift",
@@ -774,7 +889,8 @@ def _derive_state_actions(state: SessionState) -> List[AdjustmentAction]:
                 action_type="adjust_intensity",
                 set_delta=0,
                 rest_multiplier=1.1,
-                tempo_cue=state.tempo_cue,
+                beat_multiplier=0.9,
+                tempo_cue="slower" if state.tempo_cue == "normal" else state.tempo_cue,
                 reason="state_medium_fatigue_recovery",
                 rule_id="state_medium_recovery",
                 state_reason="fatigue=medium",
@@ -787,6 +903,7 @@ def _derive_state_actions(state: SessionState) -> List[AdjustmentAction]:
                 action_type="adjust_intensity",
                 set_delta=0,
                 rest_multiplier=0.9,
+                beat_multiplier=1.1,
                 tempo_cue="faster",
                 reason="state_low_fatigue_easy_progress",
                 rule_id="state_easy_progress",
@@ -834,8 +951,10 @@ def _apply_adjustment_action(
         exercise["display_name"] = details["exercise_name"]
         exercise["instructions"] = details["instructions"]
         exercise["avg_set_time"] = int(replacement_def.get("avg_set_time", exercise["avg_set_time"]))
+        exercise["default_beat_hz"] = _normalize_beat_hz(details.get("default_beat_hz"))
+        exercise["beat_source"] = "exercise_demo_library" if "default_beat_hz" in details else "fallback"
 
-        state.adjustment_log.append(
+        state.log_adjustment(
             {
                 "action_type": action.action_type,
                 "reason": action.reason,
@@ -884,7 +1003,7 @@ def _apply_adjustment_action(
         effective_sets = _clamp_int(max(state.current_set, 1), MIN_SETS, MAX_SETS)
         exercise["total_sets"] = min(before_sets, effective_sets)
 
-        state.adjustment_log.append(
+        state.log_adjustment(
             {
                 "action_type": action.action_type,
                 "reason": action.reason,
@@ -930,15 +1049,23 @@ def _apply_adjustment_action(
     if action.action_type != "adjust_intensity":
         return
 
+    # Numeric live-state changes are clamped here, keeping adjustment rules
+    # deterministic even when an upstream model returns an extreme request.
     safe_set_delta = _clamp_int(action.set_delta, MIN_SET_DELTA, MAX_SET_DELTA)
     safe_multiplier = max(MIN_REST_MULTIPLIER, min(MAX_REST_MULTIPLIER, action.rest_multiplier))
+    safe_beat_multiplier = max(MIN_BEAT_MULTIPLIER, min(MAX_BEAT_MULTIPLIER, action.beat_multiplier))
     before_set_delta = state.set_delta
     before_rest_multiplier = state.rest_multiplier
+    before_beat_multiplier = state.beat_multiplier
     before_tempo_cue = state.tempo_cue
     state.set_delta = _clamp_int(state.set_delta + safe_set_delta, MIN_SET_DELTA, MAX_SET_DELTA)
     state.rest_multiplier = max(
         MIN_REST_MULTIPLIER,
         min(MAX_REST_MULTIPLIER, state.rest_multiplier * safe_multiplier),
+    )
+    state.beat_multiplier = max(
+        MIN_BEAT_MULTIPLIER,
+        min(MAX_BEAT_MULTIPLIER, state.beat_multiplier * safe_beat_multiplier),
     )
     if action.tempo_cue:
         state.tempo_cue = action.tempo_cue
@@ -967,11 +1094,12 @@ def _apply_adjustment_action(
             }
         )
 
-    state.adjustment_log.append(
+    state.log_adjustment(
         {
             "action_type": action.action_type,
             "set_delta": safe_set_delta,
             "rest_multiplier": safe_multiplier,
+            "beat_multiplier": safe_beat_multiplier,
             "tempo_cue": action.tempo_cue,
             "reason": action.reason,
             "rule_id": action.rule_id,
@@ -986,6 +1114,7 @@ def _apply_adjustment_action(
         {
             "set_delta": safe_set_delta,
             "rest_multiplier": safe_multiplier,
+            "beat_multiplier": safe_beat_multiplier,
             "tempo_cue": action.tempo_cue,
             "phase": state.phase,
         },
@@ -1001,8 +1130,11 @@ def _apply_adjustment_action(
             "after_set_delta": state.set_delta,
             "before_rest_multiplier": before_rest_multiplier,
             "after_rest_multiplier": state.rest_multiplier,
+            "before_beat_multiplier": before_beat_multiplier,
+            "after_beat_multiplier": state.beat_multiplier,
             "before_tempo_cue": before_tempo_cue,
             "after_tempo_cue": state.tempo_cue,
+            **_current_beat_payload(state, active_phase=state.phase == "active_set"),
             "reason": action.reason,
             "rule_id": action.rule_id,
             "source_actions": source_actions or [],
@@ -1019,35 +1151,141 @@ def _handle_user_message(
     decision_engine: DecisionEngine,
     feedback_understander: FeedbackUnderstander,
     feedback_model: str,
+    feedback_sequence_id: Optional[int] = None,
 ) -> None:
     cleaned = user_text.strip()
     if not cleaned:
         return
+    if feedback_sequence_id is None:
+        state.feedback_sequence += 1
+        feedback_sequence_id = state.feedback_sequence
+    consume_feedback_context = getattr(io, "consume_feedback_context", None)
+    feedback_context = consume_feedback_context(cleaned) if callable(consume_feedback_context) else {}
+    feedback_id = str(feedback_context.get("feedback_id") or uuid4().hex[:12])
+    feedback_processing_started_at = time.perf_counter()
+    asr_latency_ms = int(feedback_context.get("asr_latency_ms", 0))
 
+    def total_response_time_ms() -> int:
+        return asr_latency_ms + int((time.perf_counter() - feedback_processing_started_at) * 1000)
+
+    state.active_feedback_id = feedback_id
+    trace = {
+        "condition_id": state.condition_id,
+        "feedback_id": feedback_id,
+        "transcript_id": feedback_context.get("transcript_id", ""),
+        "input_method": feedback_context.get("input_method", ""),
+        "submit_method": feedback_context.get("submit_method", ""),
+        "timestamp": _timestamp(),
+        "current_exercise": _build_feedback_state_snapshot(state)["current_exercise_name"],
+        "phase": state.phase,
+        "user_feedback": cleaned,
+        "feedback_sequence_id": feedback_sequence_id,
+        "parsed_intent": "",
+        "llm_channel": "",
+        "stale_reason": "",
+        "structured_state": {},
+        "system_adjustments": [],
+        "asr_latency_ms": asr_latency_ms,
+        "feedback_understanding_ms": None,
+        "response_time_ms": None,
+        "status": "received",
+    }
+    state.feedback_trace.append(trace)
+
+    # This is the only entry point that converts raw feedback text into state
+    # changes. Fast rules, LLM fallback, stale-result protection, and logging
+    # all pass through here so the experiment logs stay comparable.
     _emit_runtime_event(
         io,
         "feedback_received",
-        {"text": cleaned, "phase": state.phase},
+        {
+            "text": cleaned,
+            "phase": state.phase,
+            "input_method": feedback_context.get("input_method", ""),
+            "submit_method": feedback_context.get("submit_method", ""),
+        },
     )
-    state.conversation_log.append({"role": "user", "content": cleaned})
+    state.log_conversation({"role": "user", "content": cleaned})
     state.log_event("user_message", {"content": cleaned})
 
     if state.awaiting_stop_confirmation:
         _handle_stop_confirmation(cleaned, state, io)
+        trace["parsed_intent"] = "stop_confirmation"
+        trace["response_time_ms"] = total_response_time_ms()
+        trace["status"] = "confirmation_handled"
+        state.active_feedback_id = ""
         return
 
     if state.awaiting_pain_confirmation:
         _handle_pain_confirmation(cleaned, state, io)
+        trace["parsed_intent"] = "pain_confirmation"
+        trace["response_time_ms"] = total_response_time_ms()
+        trace["status"] = "confirmation_handled"
+        state.active_feedback_id = ""
         return
 
-    understanding = feedback_understander(cleaned, _build_feedback_state_snapshot(state), model=feedback_model)
+    context_before_understanding = {
+        "condition_id": state.condition_id,
+        "current_exercise": state.current_exercise,
+        "phase": state.phase,
+    }
+    understanding_started_at = time.perf_counter()
+    understanding = understand_feedback_fast_path(cleaned)
+    if understanding is None:
+        understanding = feedback_understander(cleaned, _build_feedback_state_snapshot(state), model=feedback_model)
+    response_time_ms = int((time.perf_counter() - understanding_started_at) * 1000)
 
     if understanding is None or isinstance(understanding, FeedbackUnderstandingFailure):
         failure = understanding if isinstance(understanding, FeedbackUnderstandingFailure) else None
         _log_feedback_understanding_failure(state, io, cleaned, feedback_model, failure)
+        state.log_event("feedback_response_time", {"response_time_ms": response_time_ms, "status": "failed"})
+        trace["feedback_understanding_ms"] = response_time_ms
+        trace["response_time_ms"] = total_response_time_ms()
+        trace["status"] = "understanding_failed"
+        state.active_feedback_id = ""
         return
 
+    trace["llm_channel"] = understanding.llm_channel
+
+    if understanding.llm_channel == "llm_fallback":
+        stale_reason = ""
+        if feedback_sequence_id != state.feedback_sequence:
+            stale_reason = "superseded_by_newer_feedback"
+        elif not state.is_active:
+            stale_reason = "workout_inactive"
+        elif state.condition_id != context_before_understanding["condition_id"]:
+            stale_reason = "context_changed"
+        elif state.current_exercise != context_before_understanding["current_exercise"]:
+            stale_reason = "context_changed"
+        elif state.phase != context_before_understanding["phase"]:
+            stale_reason = "context_changed"
+
+        if stale_reason:
+            detail = {
+                "raw_text": cleaned,
+                "intent": understanding.intent,
+                "actions": understanding.actions,
+                "confidence": understanding.confidence,
+                "reason": "stale_llm_result",
+                "stale_reason": stale_reason,
+                "feedback_id": feedback_id,
+                "feedback_sequence_id": feedback_sequence_id,
+                "latest_feedback_sequence_id": state.feedback_sequence,
+                "llm_channel": understanding.llm_channel,
+            }
+            state.log_event("feedback_stale_ignored", detail)
+            _emit_runtime_event(io, "feedback_ignored", detail)
+            trace["parsed_intent"] = understanding.intent
+            trace["structured_state"] = _structured_understanding_state(understanding)
+            trace["feedback_understanding_ms"] = response_time_ms
+            trace["response_time_ms"] = total_response_time_ms()
+            trace["status"] = "stale_ignored"
+            trace["stale_reason"] = stale_reason
+            state.active_feedback_id = ""
+            return
+
     if understanding.confidence <= LOW_FEEDBACK_CONFIDENCE:
+        state.log_event("feedback_response_time", {"response_time_ms": response_time_ms, "status": "ignored"})
         _log_feedback_ignored(
             state,
             io,
@@ -1056,9 +1294,28 @@ def _handle_user_message(
             understanding.confidence,
             "low_confidence",
         )
+        trace["parsed_intent"] = understanding.intent
+        trace["structured_state"] = _structured_understanding_state(understanding)
+        trace["feedback_understanding_ms"] = response_time_ms
+        trace["response_time_ms"] = total_response_time_ms()
+        trace["status"] = "ignored_low_confidence"
+        state.active_feedback_id = ""
         return
 
     condition_changed = _apply_condition_from_understanding(understanding, state)
+    trace["parsed_intent"] = understanding.intent
+    trace["structured_state"] = _structured_understanding_state(understanding)
+    trace["feedback_understanding_ms"] = response_time_ms
+    state.log_event(
+        "feedback_response_time",
+        {
+            "asr_latency_ms": asr_latency_ms,
+            "feedback_understanding_ms": response_time_ms,
+            "response_time_ms": total_response_time_ms(),
+            "status": "understood",
+            "llm_channel": understanding.llm_channel,
+        },
+    )
     _emit_runtime_event(
         io,
         "feedback_understood",
@@ -1072,6 +1329,10 @@ def _handle_user_message(
             "reason": understanding.reason,
             "raw_text": understanding.raw_text,
             "condition_changed": condition_changed,
+            "llm_channel": understanding.llm_channel,
+            "feedback_sequence_id": feedback_sequence_id,
+            "feedback_understanding_ms": response_time_ms,
+            "response_time_ms": total_response_time_ms(),
         },
     )
     decision = _build_decision_from_actions(understanding, state, decision_engine)
@@ -1092,9 +1353,12 @@ def _handle_user_message(
             understanding.confidence,
             "no_applicable_adjustment",
         )
+        trace["status"] = "ignored_no_adjustment"
+        trace["response_time_ms"] = total_response_time_ms()
+        state.active_feedback_id = ""
         return
 
-    _send_coach_reply(io, state, decision.coach_reply)
+    _send_coach_reply(io, state, decision.coach_reply, urgent=decision.requires_confirmation)
 
     for action in all_actions:
         _apply_adjustment_action(
@@ -1104,12 +1368,21 @@ def _handle_user_message(
             confidence=understanding.confidence,
             source_actions=understanding.actions,
         )
+    trace["system_adjustments"] = [
+        item for item in state.adjustment_log if item.get("feedback_id") == feedback_id
+    ]
+    trace["status"] = "handled"
+    trace["response_time_ms"] = total_response_time_ms()
 
     if decision.requires_confirmation:
+        set_confirmation = getattr(io, "set_pending_confirmation", None)
+        if callable(set_confirmation):
+            set_confirmation(decision.confirmation_type)
         if decision.confirmation_type == "pain":
             state.awaiting_pain_confirmation = True
         elif decision.confirmation_type == "stop":
             state.awaiting_stop_confirmation = True
+    state.active_feedback_id = ""
 
 
 def _drain_messages(
@@ -1120,7 +1393,13 @@ def _drain_messages(
     feedback_model: str,
     feedback_worker: Optional[FeedbackWorker] = None,
 ) -> None:
+    if _consume_external_stop_request(state, io):
+        return
+    if not state.feedback_enabled:
+        return
     while state.is_active:
+        if _consume_external_stop_request(state, io):
+            return
         message = io.poll_user_input()
         if message is None:
             return
@@ -1128,6 +1407,20 @@ def _drain_messages(
             feedback_worker.submit(message)
         else:
             _handle_user_message(message, state, io, decision_engine, feedback_understander, feedback_model)
+
+
+def _consume_external_stop_request(state: SessionState, io: ExecutorIO) -> bool:
+    consume_stop = getattr(io, "consume_condition_stop_request", None)
+    if not callable(consume_stop):
+        return False
+    reason = consume_stop()
+    if not reason:
+        return False
+    state.is_active = False
+    state.end_reason = reason
+    state.log_event("external_condition_stop", {"reason": reason})
+    _emit_runtime_event(io, "condition_stop_requested", {"reason": reason})
+    return True
 
 
 def _run_timed_phase(
@@ -1152,10 +1445,14 @@ def _run_timed_phase(
             "current_round": state.current_round + 1,
             "current_exercise": state.current_exercise + 1,
             "current_set": state.current_set,
+            "tempo_cue": state.tempo_cue,
+            **_current_beat_payload(state),
         },
     )
 
     while state.is_active and state.seconds_remaining > 0:
+        if _consume_external_stop_request(state, io):
+            break
         _emit_runtime_event(
             io,
             "phase_tick",
@@ -1168,6 +1465,7 @@ def _run_timed_phase(
                 "tempo_cue": state.tempo_cue,
                 "set_delta": state.set_delta,
                 "rest_multiplier": state.rest_multiplier,
+                **_current_beat_payload(state, active_phase=phase == "active_set"),
             },
         )
         _drain_messages(state, io, decision_engine, feedback_understander, feedback_model, feedback_worker)
@@ -1204,6 +1502,8 @@ def _run_pre_exercise_preview_wait(
     )
 
     while state.is_active and state.seconds_remaining > 0:
+        if _consume_external_stop_request(state, io):
+            break
         _emit_runtime_event(
             io,
             "phase_tick",
@@ -1216,6 +1516,7 @@ def _run_pre_exercise_preview_wait(
                 "tempo_cue": state.tempo_cue,
                 "set_delta": state.set_delta,
                 "rest_multiplier": state.rest_multiplier,
+                **_current_beat_payload(state, active_phase=False),
             },
         )
         _drain_messages(state, io, decision_engine, feedback_understander, feedback_model, feedback_worker)
@@ -1250,6 +1551,7 @@ def export_session_log(state: SessionState, path: str) -> None:
     for item in state.adjustment_log:
         adjustment_reason_trace.append(
             {
+                "condition_id": state.condition_id,
                 "action_type": item.get("action_type"),
                 "rule_id": item.get("rule_id", ""),
                 "state_reason": item.get("state_reason", ""),
@@ -1258,9 +1560,15 @@ def export_session_log(state: SessionState, path: str) -> None:
         )
 
     payload = {
+        "condition_id": state.condition_id,
+        "experiment_metadata": state.experiment_metadata,
         "summary": {
+            "condition_id": state.condition_id,
             "is_active": state.is_active,
             "end_reason": state.end_reason,
+            "session_started_at": state.session_started_at,
+            "session_ended_at": state.session_ended_at,
+            "actual_duration_seconds": state.actual_duration_seconds,
             "current_round": state.current_round,
             "current_exercise": state.current_exercise,
             "current_set": state.current_set,
@@ -1274,10 +1582,12 @@ def export_session_log(state: SessionState, path: str) -> None:
         "adjustments": state.adjustment_log,
         "adjustment_reason_trace": adjustment_reason_trace,
         "feedback_understanding_failures": [
-            event["detail"]
+            {"condition_id": state.condition_id, **event["detail"]}
             for event in state.event_log
             if event.get("type") == "feedback_understanding_failed"
         ],
+        "transcripts": state.transcript_log,
+        "feedback_traces": state.feedback_trace,
         "conversation": state.conversation_log,
         "events": state.event_log,
     }
@@ -1295,6 +1605,10 @@ def run_adaptive_workout(
     log_path: Optional[str] = None,
     initial_intent: Optional[Dict] = None,
     exercise_library: Optional[List[Dict]] = None,
+    condition_id: str = "",
+    experiment_metadata: Optional[Dict] = None,
+    feedback_enabled: bool = True,
+    close_io: bool = True,
 ) -> SessionState:
     runtime_io = io or CLIExecutorIO()
     runtime_clock = clock or RealClock()
@@ -1303,19 +1617,24 @@ def run_adaptive_workout(
     feedback_worker: Optional[FeedbackWorker] = None
 
     translated_plan = translate_plan_for_demo(workout_plan)
+    session_started_clock = runtime_clock.now()
     state = SessionState(
         workout_plan=translated_plan,
+        condition_id=condition_id,
+        experiment_metadata=deepcopy(experiment_metadata or {}),
+        feedback_enabled=feedback_enabled,
+        session_started_at=_timestamp(),
         initial_workout_plan=deepcopy(translated_plan),
         initial_intent=deepcopy(initial_intent or {}),
         exercise_library=deepcopy(exercise_library or []),
     )
-    state.log_event("session_start", {"timestamp": runtime_clock.now()})
+    state.log_event("session_start", {"clock_time": session_started_clock})
     _emit_runtime_event(
         runtime_io,
         "workout_started",
         {"workout_plan": deepcopy(state.workout_plan), "initial_intent": deepcopy(state.initial_intent)},
     )
-    if getattr(runtime_io, "nonblocking_feedback", False):
+    if feedback_enabled and getattr(runtime_io, "nonblocking_feedback", False):
         feedback_worker = FeedbackWorker(
             state=state,
             io=runtime_io,
@@ -1378,6 +1697,7 @@ def run_adaptive_workout(
                             "exercise_index": ex_idx,
                             "exercise_name": exercise["exercise_name"],
                             "tempo_cue": state.tempo_cue,
+                            **_current_beat_payload(state, active_phase=True),
                             "current_round": round_idx + 1,
                             "total_rounds": rounds,
                         },
@@ -1438,6 +1758,31 @@ def run_adaptive_workout(
                             feedback_worker=feedback_worker,
                         )
 
+                rest_after_exercise = int(exercise.get("rest_after_exercise_seconds", 0))
+                if state.is_active and rest_after_exercise > 0:
+                    _emit_runtime_event(
+                        runtime_io,
+                        "rest_start",
+                        {
+                            "rest_type": "after_exercise",
+                            "seconds": rest_after_exercise,
+                            "exercise_index": ex_idx,
+                            "exercise_name": exercise["exercise_name"],
+                        },
+                    )
+                    runtime_io.send(f"Rest for {rest_after_exercise} seconds.")
+                    _run_timed_phase(
+                        seconds=rest_after_exercise,
+                        phase="after_exercise_rest",
+                        state=state,
+                        io=runtime_io,
+                        clock=runtime_clock,
+                        decision_engine=runtime_decision_engine,
+                        feedback_understander=runtime_feedback_understander,
+                        feedback_model=feedback_model,
+                        feedback_worker=feedback_worker,
+                    )
+
             if state.is_active and round_idx < rounds - 1:
                 rest_between_rounds = state.workout_plan["rest_between_rounds"]
                 runtime_io.send("Round finished.")
@@ -1478,12 +1823,19 @@ def run_adaptive_workout(
     finally:
         if feedback_worker is not None:
             feedback_worker.close()
-        state.log_event("session_end", {"timestamp": runtime_clock.now(), "reason": state.end_reason})
+        session_ended_clock = runtime_clock.now()
+        state.session_ended_at = _timestamp()
+        state.actual_duration_seconds = max(0.0, session_ended_clock - session_started_clock)
+        get_transcript_log = getattr(runtime_io, "get_transcript_log", None)
+        if callable(get_transcript_log):
+            state.transcript_log = get_transcript_log()
+        state.log_event("session_end", {"clock_time": session_ended_clock, "reason": state.end_reason})
         if log_path:
             export_session_log(state, log_path)
             _emit_runtime_event(runtime_io, "log_saved", {"path": log_path})
             runtime_io.send(f"Session log saved: {log_path}")
-        runtime_io.close()
+        if close_io:
+            runtime_io.close()
 
     return state
 

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from ai_coach_system import AICoachSystem
 from feedback_understanding import FeedbackUnderstandingResult
-from workout_planner import filter_exercises
+from workout_planner import build_planner_exercise_payload, filter_exercises
 
 
 class FakeClock:
@@ -63,7 +63,7 @@ class StubAICoachSystem(AICoachSystem):
                 "rest_between_rounds": 5,
                 "exercises": [
                     {
-                        "exercise": "push_up",
+                        "exercise": "wall_push_up",
                         "avg_set_time": 1,
                         "total_sets": 2,
                         "rest_seconds": 1,
@@ -82,14 +82,65 @@ class StubAICoachSystem(AICoachSystem):
 class TestAICoachSystem(unittest.TestCase):
     def test_full_body_filter_uses_only_full_body_exercises(self):
         exercises = [
-            {"name": "push_up", "target_muscles": ["chest"]},
+            {"name": "wall_push_up", "target_muscles": ["chest"]},
             {"name": "jumping_jacks", "target_muscles": ["full_body"]},
-            {"name": "mountain_climber", "target_muscles": ["core", "full_body"]},
+            {"name": "standing_march", "target_muscles": ["legs", "full_body"]},
         ]
 
         filtered = filter_exercises(exercises, {"target_muscles": ["full_body"], "avoid_body_parts": []})
 
-        self.assertEqual(["jumping_jacks", "mountain_climber"], [ex["name"] for ex in filtered])
+        self.assertEqual(["jumping_jacks", "standing_march"], [ex["name"] for ex in filtered])
+
+    def test_low_intensity_filter_excludes_high_intensity_even_for_full_body(self):
+        exercises = [
+            {"name": "jumping_jacks", "target_muscles": ["full_body"], "intensity_level": "high"},
+            {"name": "standing_march", "target_muscles": ["full_body"], "intensity_level": "low"},
+            {"name": "step_jack", "target_muscles": ["full_body"], "intensity_level": "low"},
+            {"name": "side_step_touch", "target_muscles": ["full_body"], "intensity_level": "low"},
+        ]
+
+        filtered = filter_exercises(
+            exercises,
+            {
+                "target_muscles": ["full_body"],
+                "avoid_body_parts": [],
+                "intensity_preference": "low",
+            },
+        )
+
+        self.assertEqual(["standing_march", "step_jack", "side_step_touch"], [ex["name"] for ex in filtered])
+
+    def test_moderate_intensity_does_not_exclude_high_intensity(self):
+        exercises = [
+            {"name": "jumping_jacks", "target_muscles": ["full_body"], "intensity_level": "high"},
+            {"name": "standing_side_bend", "target_muscles": ["core"], "intensity_level": "low"},
+        ]
+
+        filtered = filter_exercises(
+            exercises,
+            {
+                "target_muscles": ["full_body"],
+                "avoid_body_parts": [],
+                "intensity_preference": "moderate",
+            },
+        )
+
+        self.assertEqual(["jumping_jacks"], [ex["name"] for ex in filtered])
+
+    def test_planner_exercise_payload_only_exposes_name_and_time(self):
+        payload = build_planner_exercise_payload(
+            [
+                {
+                    "name": "standing_side_bend",
+                    "target_muscles": ["core"],
+                    "avg_set_time": 40,
+                    "intensity_level": "low",
+                    "default_beat_hz": 0.25,
+                }
+            ]
+        )
+
+        self.assertEqual([{"name": "standing_side_bend", "avg_set_time": 40}], payload)
 
     def test_run_session_generates_files_without_execution(self):
         tmpdir = os.path.join("data", f"test_output_{uuid4().hex}")

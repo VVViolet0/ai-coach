@@ -13,6 +13,7 @@ __pycache__/
 .vscode/
 
 # Runtime outputs
+data/
 data/intent_*.json
 data/workout_plan_*.json
 data/session_log_*.json
@@ -24,6 +25,23 @@ data/*.tmp
 
 # Runtime json artifacts in data.
 data/*.json
+data/experiments/*.json
+experiment_data/
+
+# Experiment-only entrypoints, pages, and analysis helpers
+experiment_runner.py
+test_experiment_runner.py
+test_feedback_understanding.py
+analyze_experiment_data.py
+diagnose_ollama.py
+voice_demo/experiment_server.py
+voice_demo/static/experiment.html
+voice_demo/static/condition_post_qr.png
+web_speech_test.html
+
+# Research writing drafts
+*.docx
+*论文*.md
 
 # Voice demo local runtime files
 voice_demo/*.log

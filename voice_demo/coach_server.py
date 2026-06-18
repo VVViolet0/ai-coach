@@ -9,8 +9,12 @@ import re
 import sys
 import threading
 import time
+from copy import deepcopy
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+from uuid import uuid4
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -37,10 +41,31 @@ except ImportError:  # pragma: no cover - supports `python voice_demo/coach_serv
     from server import MockTranscriber, WhisperTranscriber
 
 from ai_coach_system import AICoachSystem
+from experiment_runner import CONDITIONS, ExperimentRunner
+from feedback_understanding import (
+    classify_feedback_candidate as classify_feedback_candidate_with_rules,
+    compact_feedback_text,
+    is_confirmation_text,
+    is_safety_feedback_text,
+)
 
 
 Publisher = Callable[[Dict[str, Any]], None]
 INITIAL_PLANNING_SPEECH = "收到您的训练需求，正在为您生成训练计划。与此同时您可以进行一些热身。"
+EXPERIMENT_PREPARATION_SPEECH = "已接受到训练需求。与此同时您可以进行一些热身。"
+A_CONDITION_SPEECH = (
+    "接下来这一轮是固定训练方案，不会根据你刚才填写的个人目标或偏好设计训练内容，"
+    "因此训练内容可能不完全符合你的需求。本轮训练过程中，请尽量按照系统提示完成训练；"
+    "如果出现明显不适，可以随时告知实验人员并停止训练。"
+)
+B_CONDITION_SPEECH = (
+    "接下来这一轮会根据你的训练目标生成训练计划。本轮训练过程中，请尽量按照系统提示完成训练；"
+    "如果出现明显不适，可以随时告知实验人员并停止训练。"
+)
+INTERACTIVE_CONDITION_SPEECH = (
+    "接下来这一轮会根据你的训练目标生成训练计划。本轮训练过程中，你可以通过自然语言表达疲劳、"
+    "节奏、不适、想换动作或停止训练等需求，系统会尝试根据你的反馈调整后续训练。"
+)
 CHINESE_ORDER_MARKERS = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
 FEEDBACK_KEYWORDS = {
     "休息",
@@ -89,12 +114,72 @@ FEEDBACK_KEYWORDS = {
     "longer",
 }
 SAFETY_KEYWORDS = {"疼", "痛", "不舒服", "停止", "结束", "停", "stop", "pain", "hurt", "quit"}
+CONFIRMATION_KEYWORDS = {
+    "是",
+    "是的",
+    "对",
+    "对的",
+    "好",
+    "好的",
+    "可以",
+    "行",
+    "否",
+    "不",
+    "不要",
+    "不用",
+    "继续",
+    "停止",
+    "结束",
+    "停",
+    "yes",
+    "no",
+    "stop",
+    "continue",
+}
 COMMON_ASR_HALLUCINATIONS = {
     "谢谢观看",
     "感谢观看",
     "欢迎收看",
     "我认为你会不会有什么事",
 }
+
+FEEDBACK_KEYWORDS.update(
+    {
+        "休息",
+        "太长",
+        "太短",
+        "短一点",
+        "长一点",
+        "快",
+        "慢",
+        "累",
+        "疲劳",
+        "痛",
+        "疼",
+        "不舒服",
+        "难",
+        "简单",
+        "轻松",
+        "动作",
+        "换",
+        "跳过",
+        "不想",
+        "停止",
+        "停了",
+        "结束",
+        "继续",
+        "不喜欢",
+        "膝盖",
+        "状态很好",
+        "很好",
+        "多练",
+        "加练",
+        "加组",
+        "再来",
+    }
+)
+SAFETY_KEYWORDS.update({"痛", "疼", "不舒服", "停止", "停了", "结束", "停", "可以停了", "不想继续"})
+CONFIRMATION_KEYWORDS.update({"是", "是的", "对", "对的", "好", "好的", "可以", "行", "否", "不用", "不要", "继续", "停止", "结束", "停"})
 
 
 def _coach_message(
@@ -127,47 +212,43 @@ def _initial_planning_message() -> Dict[str, Any]:
     }
 
 
+def _experiment_preparation_message() -> Dict[str, Any]:
+    return {
+        "type": "coach_message",
+        **_coach_message(
+            display=True,
+            speak=True,
+            message=EXPERIMENT_PREPARATION_SPEECH,
+            speech_text=EXPERIMENT_PREPARATION_SPEECH,
+            category="experiment_preparation",
+        ),
+    }
+
+
+def condition_instruction_for(condition_id: str) -> str:
+    if condition_id == "A":
+        return A_CONDITION_SPEECH
+    if condition_id == "B":
+        return B_CONDITION_SPEECH
+    if condition_id == "C":
+        return INTERACTIVE_CONDITION_SPEECH
+    return A_CONDITION_SPEECH
+
+
 def _strip_coach_prefix(message: str) -> str:
     return message.strip().replace("[Coach]", "").replace("[Adjustment]", "").strip()
 
 
 def _compact_text(text: str) -> str:
-    return re.sub(r"\s+", "", text.strip().lower())
+    return compact_feedback_text(text)
 
 
 def _has_safety_keyword(text: str) -> bool:
-    normalized = _compact_text(text)
-    return any(keyword in normalized for keyword in SAFETY_KEYWORDS)
-
-
-def _is_repetitive_asr_text(text: str) -> bool:
-    normalized = _compact_text(text)
-    if len(normalized) < 10:
-        return False
-    if len(set(normalized)) / max(1, len(normalized)) < 0.28:
-        return True
-    for width in range(2, min(9, len(normalized) // 2 + 1)):
-        chunks = [normalized[i : i + width] for i in range(0, len(normalized) - width + 1, width)]
-        if len(chunks) >= 3 and max(chunks.count(chunk) for chunk in set(chunks)) >= 3:
-            return True
-    return False
+    return is_safety_feedback_text(text)
 
 
 def classify_feedback_candidate(text: str) -> tuple[bool, str]:
-    normalized = _compact_text(text)
-    if not normalized:
-        return False, "empty"
-    if _has_safety_keyword(normalized):
-        return True, "safety_keyword"
-    if any(phrase in normalized for phrase in COMMON_ASR_HALLUCINATIONS):
-        return False, "common_asr_hallucination"
-    if _is_repetitive_asr_text(normalized):
-        return False, "repetitive_asr"
-    if any(keyword in normalized for keyword in FEEDBACK_KEYWORDS):
-        return True, "feedback_keyword"
-    if len(normalized) <= 2:
-        return False, "too_short"
-    return False, "no_feedback_keyword"
+    return classify_feedback_candidate_with_rules(text)
 
 
 def _describe_adjustment(set_delta: int, rest_multiplier: float) -> str:
@@ -317,14 +398,36 @@ class VoiceCoachIO:
         self._speech_counter = 0
         self._speech_events: Dict[str, threading.Event] = {}
         self._last_speech_id_by_category: Dict[str, str] = {}
+        self._log_lock = threading.Lock()
+        self._transcript_log: list[Dict[str, Any]] = []
+        self._feedback_contexts: Dict[str, list[Dict[str, Any]]] = {}
+        self._condition_stop_lock = threading.Lock()
+        self._condition_stop_requested = False
+        self._condition_stop_reason = ""
+        self._confirmation_lock = threading.Lock()
+        self._pending_confirmation_type = ""
         self.nonblocking_feedback = True
 
-    def enqueue_user_text(self, text: str, *, safety: bool = False) -> None:
+    def enqueue_user_text(self, text: str, *, safety: bool = False, transcript_id: str = "") -> None:
         cleaned = text.strip()
         if not cleaned or self._closed:
             return
         if not safety:
             self._drop_pending_normal_feedback()
+        with self._log_lock:
+            transcript = next(
+                (item for item in reversed(self._transcript_log) if item.get("transcript_id") == transcript_id),
+                {},
+            )
+            self._feedback_contexts.setdefault(cleaned, []).append(
+                {
+                    "feedback_id": uuid4().hex[:12],
+                    "transcript_id": transcript_id,
+                    "asr_latency_ms": int(transcript.get("latency_ms", 0)),
+                    "input_method": transcript.get("input_method", "asr_whisper"),
+                    "submit_method": transcript.get("submit_method", "vad_auto"),
+                }
+            )
         self._messages.put(cleaned)
 
     def _drop_pending_normal_feedback(self) -> None:
@@ -334,10 +437,48 @@ class VoiceCoachIO:
                 message = self._messages.get_nowait()
                 if _has_safety_keyword(message):
                     kept.append(message)
+                else:
+                    self.consume_feedback_context(message)
         except queue.Empty:
             pass
         for message in kept:
             self._messages.put(message)
+
+    def consume_feedback_context(self, text: str) -> Dict[str, Any]:
+        with self._log_lock:
+            contexts = self._feedback_contexts.get(text, [])
+            if not contexts:
+                return {}
+            context = contexts.pop(0)
+            if not contexts:
+                self._feedback_contexts.pop(text, None)
+            return context
+
+    def log_transcript(self, record: Dict[str, Any]) -> str:
+        transcript_id = str(record.get("transcript_id") or uuid4().hex[:12])
+        with self._log_lock:
+            self._transcript_log.append(
+                {
+                    "transcript_id": transcript_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    **record,
+                }
+            )
+        return transcript_id
+
+    def update_transcript_route(self, transcript_id: str, target: str, reason: str = "") -> None:
+        if not transcript_id:
+            return
+        with self._log_lock:
+            for record in reversed(self._transcript_log):
+                if record.get("transcript_id") == transcript_id:
+                    record["target"] = target
+                    record["route_reason"] = reason
+                    return
+
+    def get_transcript_log(self) -> list[Dict[str, Any]]:
+        with self._log_lock:
+            return deepcopy(self._transcript_log)
 
     def send(self, message: str) -> None:
         if self._closed:
@@ -347,6 +488,31 @@ class VoiceCoachIO:
         if classified.get("speak"):
             speech_id = self._register_speech(str(classified.get("category", "")))
             payload["speech_id"] = speech_id
+        self._publish(payload)
+
+    def send_coach_message(
+        self,
+        message: str,
+        *,
+        category: str,
+        speak: bool = True,
+        display: bool = True,
+        speech_text: str = "",
+    ) -> None:
+        if self._closed:
+            return
+        payload = {
+            "type": "coach_message",
+            **_coach_message(
+                display=display,
+                speak=speak,
+                message=message,
+                speech_text=speech_text or message,
+                category=category,
+            ),
+        }
+        if speak:
+            payload["speech_id"] = self._register_speech(category)
         self._publish(payload)
 
     def _register_speech(self, category: str) -> str:
@@ -377,6 +543,29 @@ class VoiceCoachIO:
                 self._last_speech_id_by_category.pop(category, None)
         return completed
 
+    def request_condition_stop(self, reason: str = "manual_condition_stop") -> None:
+        with self._condition_stop_lock:
+            self._condition_stop_requested = True
+            self._condition_stop_reason = reason
+        with self._speech_lock:
+            events = list(self._speech_events.values())
+        for event in events:
+            event.set()
+
+    def consume_condition_stop_request(self) -> str:
+        with self._condition_stop_lock:
+            if not self._condition_stop_requested:
+                return ""
+            reason = self._condition_stop_reason or "manual_condition_stop"
+            self._condition_stop_requested = False
+            self._condition_stop_reason = ""
+            return reason
+
+    def clear_condition_stop_request(self) -> None:
+        with self._condition_stop_lock:
+            self._condition_stop_requested = False
+            self._condition_stop_reason = ""
+
     def send_event(self, event_type: str, payload: Dict[str, Any]) -> None:
         if self._closed:
             return
@@ -393,6 +582,18 @@ class VoiceCoachIO:
     def close(self) -> None:
         self._closed = True
 
+    def set_pending_confirmation(self, confirmation_type: str) -> None:
+        with self._confirmation_lock:
+            self._pending_confirmation_type = confirmation_type
+
+    def clear_pending_confirmation(self) -> None:
+        with self._confirmation_lock:
+            self._pending_confirmation_type = ""
+
+    def has_pending_confirmation(self) -> bool:
+        with self._confirmation_lock:
+            return bool(self._pending_confirmation_type)
+
 
 class CoachSession:
     def __init__(self, websocket: WebSocket, config: "ServerConfig") -> None:
@@ -406,6 +607,10 @@ class CoachSession:
         self._closed = False
         self._last_feedback_text = ""
         self._last_feedback_at = 0.0
+        self.experiment_condition_id: Optional[str] = None
+        self.participant_id = "anonymous"
+        self.experiment_runner: Optional[ExperimentRunner] = None
+        self.prepared_experiment: Optional[Dict[str, Any]] = None
 
     async def publish(self, payload: Dict[str, Any]) -> None:
         await self.websocket.send_text(json.dumps(payload, ensure_ascii=False))
@@ -448,9 +653,21 @@ class CoachSession:
             result = await asyncio.to_thread(self.get_transcriber().transcribe, segment)
             latency_ms = int((time.perf_counter() - total_start) * 1000)
             text = result["text"].strip()
+            transcript_id = self.io.log_transcript(
+                {
+                    "text": text,
+                    "latency_ms": latency_ms,
+                    "asr_ms": result["asr_ms"],
+                    "segment_ms": segment.duration_ms,
+                    "language": result["language"],
+                    "language_probability": result["language_probability"],
+                    "target": "pending_route",
+                }
+            )
             await self.publish(
                 {
                     "type": "transcript_final",
+                    "transcript_id": transcript_id,
                     "text": text,
                     "latency_ms": latency_ms,
                     "asr_ms": result["asr_ms"],
@@ -468,20 +685,91 @@ class CoachSession:
                 }
             )
             if text:
-                await self.route_transcript(text)
+                await self.route_transcript(text, transcript_id=transcript_id)
         except Exception as exc:
             await self.set_state("error")
             await self.publish({"type": "error", "message": str(exc)})
 
-    async def route_transcript(self, text: str) -> None:
+    async def submit_text_transcript(
+        self,
+        text: str,
+        *,
+        input_method: str = "text_manual",
+        submit_method: str = "manual",
+    ) -> None:
+        cleaned = text.strip()
+        if not cleaned:
+            await self.publish({"type": "error", "message": "Submitted text is empty."})
+            return
+
+        transcript_id = self.io.log_transcript(
+            {
+                "text": cleaned,
+                "latency_ms": 0,
+                "asr_ms": 0,
+                "segment_ms": 0,
+                "language": "zh",
+                "language_probability": 1.0,
+                "target": "pending_route",
+                "input_method": input_method,
+                "submit_method": submit_method,
+            }
+        )
+        await self.publish(
+            {
+                "type": "transcript_final",
+                "transcript_id": transcript_id,
+                "text": cleaned,
+                "latency_ms": 0,
+                "asr_ms": 0,
+                "segment_ms": 0,
+                "language": "zh",
+                "language_probability": 1.0,
+                "input_method": input_method,
+                "submit_method": submit_method,
+            }
+        )
+        await self.publish({"type": "metrics", "segment_ms": 0, "asr_ms": 0, "latency_ms": 0})
+        await self.route_transcript(cleaned, transcript_id=transcript_id)
+
+    async def route_transcript(self, text: str, transcript_id: str = "") -> None:
         if self.state == "idle":
+            self.io.update_transcript_route(transcript_id, "initial_intent")
             await self.publish({"type": "user_transcript", "text": text, "target": "initial_intent"})
-            await self.publish(_initial_planning_message())
-            await self.set_state("planning")
-            self.start_coach(text)
+            if self.config.experiment_mode:
+                await self.publish(_experiment_preparation_message())
+                await self.set_state("preparing_experiment")
+                self.start_experiment_prepare(text)
+            else:
+                await self.publish(_initial_planning_message())
+                await self.set_state("planning")
+                self.start_coach(text)
+            return
+
+        if self.state in {"preparing_experiment", "prepared"}:
+            self.io.update_transcript_route(transcript_id, "ignored", "experiment_not_running")
+            await self.publish(
+                {"type": "user_transcript", "text": text, "target": "ignored", "reason": "experiment_not_running"}
+            )
             return
 
         if self.state in {"planning", "workout_running"}:
+            if self.experiment_condition_id in {"A", "B"}:
+                self.io.update_transcript_route(transcript_id, "ignored_feedback", "feedback_disabled_for_condition")
+                await self.publish(
+                    {
+                        "type": "user_transcript",
+                        "text": text,
+                        "target": "ignored_feedback",
+                        "reason": "feedback_disabled_for_condition",
+                    }
+                )
+                return
+            if self.io.has_pending_confirmation() and is_confirmation_text(text):
+                self.io.update_transcript_route(transcript_id, "feedback", "confirmation")
+                self.io.enqueue_user_text(text, safety=True, transcript_id=transcript_id)
+                await self.publish({"type": "user_transcript", "text": text, "target": "feedback", "reason": "confirmation"})
+                return
             accepted, reason = classify_feedback_candidate(text)
             normalized = _compact_text(text)
             now = time.monotonic()
@@ -490,12 +778,14 @@ class CoachSession:
                 reason = "duplicate_recent"
             if accepted:
                 safety = reason == "safety_keyword"
-                self.io.enqueue_user_text(text, safety=safety)
+                self.io.update_transcript_route(transcript_id, "feedback", reason)
+                self.io.enqueue_user_text(text, safety=safety, transcript_id=transcript_id)
                 self._last_feedback_text = normalized
                 self._last_feedback_at = now
                 await self.publish({"type": "user_transcript", "text": text, "target": "feedback"})
             else:
                 target = "ignored_noise" if reason in {"common_asr_hallucination", "repetitive_asr"} else "ignored_feedback"
+                self.io.update_transcript_route(transcript_id, target, reason)
                 await self.publish({"type": "user_transcript", "text": text, "target": target, "reason": reason})
             return
 
@@ -511,8 +801,95 @@ class CoachSession:
         )
         self.coach_thread.start()
 
+    def _build_experiment_runner(self) -> ExperimentRunner:
+        return ExperimentRunner(
+            exercise_library_path=self.config.exercise_library,
+            output_dir=self.config.experiment_output_dir,
+            intent_model=self.config.intent_model,
+            planner_model=self.config.planner_model,
+            feedback_model=self.config.feedback_model,
+        )
+
+    def start_experiment_prepare(self, initial_request: str) -> None:
+        if self.coach_thread and self.coach_thread.is_alive():
+            return
+        self.coach_thread = threading.Thread(
+            target=self._prepare_experiment,
+            args=(initial_request,),
+            daemon=True,
+        )
+        self.coach_thread.start()
+
+    def _prepare_experiment(self, initial_request: str) -> None:
+        try:
+            self.experiment_runner = self._build_experiment_runner()
+            self.prepared_experiment = self.experiment_runner.prepare(self.participant_id, initial_request)
+            self.set_state_from_thread("prepared")
+            self.publish_from_thread({"type": "experiment_prepared", "result": self.prepared_experiment})
+        except Exception as exc:
+            self.set_state_from_thread("error")
+            self.publish_from_thread({"type": "error", "message": str(exc)})
+
+    def start_experiment_condition(self, condition_id: str) -> None:
+        if self.coach_thread and self.coach_thread.is_alive():
+            return
+        self.io.clear_condition_stop_request()
+        self.experiment_condition_id = condition_id
+        self.coach_thread = threading.Thread(
+            target=self._run_experiment_condition,
+            args=(condition_id,),
+            daemon=True,
+        )
+        self.coach_thread.start()
+
+    def _run_experiment_condition(self, condition_id: str) -> None:
+        try:
+            if not self.prepared_experiment:
+                raise RuntimeError("Experiment has not been prepared yet.")
+            runner = self.experiment_runner or self._build_experiment_runner()
+            instruction = condition_instruction_for(condition_id)
+            self.io.send_coach_message(
+                instruction,
+                category="condition_instruction",
+                speak=True,
+                display=True,
+            )
+            self.io.wait_for_speech("condition_instruction")
+            result = runner.run_prepared_condition(
+                self.prepared_experiment,
+                condition_id=condition_id,
+                io=self.io,
+                condition_instruction=instruction,
+                close_io=False,
+            )
+            self.experiment_condition_id = None
+            self.set_state_from_thread("prepared")
+            self.publish_from_thread({"type": "condition_summary", "result": result})
+        except Exception as exc:
+            self.experiment_condition_id = None
+            self.set_state_from_thread("error")
+            self.publish_from_thread({"type": "error", "message": str(exc)})
+
+    def request_current_condition_stop(self, reason: str = "manual_condition_stop") -> bool:
+        if not self.experiment_condition_id or self.state not in {"planning", "workout_running"}:
+            return False
+        self.io.request_condition_stop(reason)
+        return True
+
     def _run_coach_session(self, initial_request: str) -> None:
         try:
+            if self.experiment_condition_id:
+                runner = self._build_experiment_runner()
+                result = runner.run(
+                    condition_id=self.experiment_condition_id,
+                    participant_id=self.participant_id,
+                    user_request=initial_request,
+                    io=self.io,
+                )
+                self.set_state_from_thread("ended")
+                self.publish_from_thread({"type": "session_summary", "result": result})
+                return
+
             system = AICoachSystem(
                 exercise_library_path=self.config.exercise_library,
                 output_dir=self.config.output_dir,
@@ -549,6 +926,8 @@ class ServerConfig:
         self.asr_backend = "whisper"
         self.exercise_library = "libraries/exercise_library.json"
         self.output_dir = "data"
+        self.experiment_output_dir = "data/experiments"
+        self.experiment_mode = False
         self.intent_model = "frob/qwen3.5-instruct:4b"
         self.planner_model = "frob/qwen3.5-instruct:4b"
         self.feedback_model = "frob/qwen3.5-instruct:4b"
@@ -569,7 +948,13 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "coach.html")
+    page = "experiment.html" if config.experiment_mode else "coach.html"
+    return FileResponse(STATIC_DIR / page)
+
+
+@app.get("/experiment")
+async def experiment_index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "experiment.html")
 
 
 @app.websocket("/ws/audio")
@@ -653,9 +1038,68 @@ async def audio_websocket(websocket: WebSocket) -> None:
                     muted = True
                     await session.publish({"type": "state_update", "status": "stopped"})
                 elif command == "start":
+                    if config.experiment_mode:
+                        participant_id = str(payload.get("participant_id", "")).strip()
+                        if not participant_id:
+                            await session.publish({"type": "error", "message": "Participant ID is required."})
+                            continue
+                        session.participant_id = participant_id
                     muted = False
                     segmenter.reset()
                     await session.publish({"type": "state_update", "status": "listening"})
+                elif command == "submit_intent":
+                    if not config.experiment_mode:
+                        await session.publish({"type": "error", "message": "submit_intent is only available in experiment mode."})
+                        continue
+                    if session.state != "idle":
+                        await session.publish({"type": "error", "message": "The training request has already been submitted."})
+                        continue
+                    await session.submit_text_transcript(
+                        str(payload.get("text", "")),
+                        input_method=str(payload.get("input_method", "text_manual")),
+                        submit_method=str(payload.get("submit_method", "manual")),
+                    )
+                elif command == "submit_feedback":
+                    if not config.experiment_mode:
+                        await session.publish({"type": "error", "message": "submit_feedback is only available in experiment mode."})
+                        continue
+                    await session.submit_text_transcript(
+                        str(payload.get("text", "")),
+                        input_method=str(payload.get("input_method", "text_manual")),
+                        submit_method=str(payload.get("submit_method", "manual")),
+                    )
+                elif command == "run_condition":
+                    requested_condition = str(payload.get("condition_id", "")).upper()
+                    if not config.experiment_mode:
+                        await session.publish({"type": "error", "message": "run_condition is only available in experiment mode."})
+                        continue
+                    if requested_condition not in CONDITIONS:
+                        await session.publish({"type": "error", "message": "Invalid experiment condition."})
+                        continue
+                    if session.state != "prepared" or not session.prepared_experiment:
+                        await session.publish({"type": "error", "message": "Prepare the experiment intent before running a condition."})
+                        continue
+                    session.experiment_condition_id = requested_condition
+                    await session.publish(
+                        {
+                            "type": "experiment_condition",
+                            "condition_id": requested_condition,
+                            "participant_id": session.participant_id,
+                            "condition": asdict(CONDITIONS[requested_condition]),
+                        }
+                    )
+                    await session.set_state("planning")
+                    session.start_experiment_condition(requested_condition)
+                elif command == "end_condition":
+                    if not config.experiment_mode:
+                        await session.publish({"type": "error", "message": "end_condition is only available in experiment mode."})
+                        continue
+                    if session.request_current_condition_stop():
+                        muted = True
+                        segmenter.flush()
+                        await session.publish({"type": "condition_stop_requested", "reason": "manual_condition_stop"})
+                    else:
+                        await session.publish({"type": "error", "message": "No experiment condition is currently running."})
                 elif command == "speech_done":
                     speech_id = str(payload.get("speech_id", ""))
                     if speech_id:
@@ -686,6 +1130,7 @@ def main() -> None:
     parser.add_argument("--asr-backend", choices=["whisper", "mock"], default="whisper")
     parser.add_argument("--exercise-library", default="libraries/exercise_library.json")
     parser.add_argument("--output-dir", default="data")
+    parser.add_argument("--experiment-output-dir", default="data/experiments")
     parser.add_argument("--intent-model", default="frob/qwen3.5-instruct:4b")
     parser.add_argument("--planner-model", default="frob/qwen3.5-instruct:4b")
     parser.add_argument("--feedback-model", default="frob/qwen3.5-instruct:4b")
@@ -705,6 +1150,7 @@ def main() -> None:
     config.asr_backend = args.asr_backend
     config.exercise_library = args.exercise_library
     config.output_dir = args.output_dir
+    config.experiment_output_dir = args.experiment_output_dir
     config.intent_model = args.intent_model
     config.planner_model = args.planner_model
     config.feedback_model = args.feedback_model

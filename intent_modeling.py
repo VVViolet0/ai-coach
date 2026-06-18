@@ -50,18 +50,26 @@ def _chat_with_model(prompt: str, model: str, temperature: float) -> str:
 
     if ollama is not None:
         try:
-            response = ollama.chat(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                options={"temperature": temperature},
-            )
+            try:
+                response = ollama.chat(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    options={"temperature": temperature},
+                    think=False,
+                )
+            except TypeError:
+                response = ollama.chat(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    options={"temperature": temperature},
+                )
             return response["message"]["content"]
         except Exception as exc:
             package_error = exc
 
     try:
         cli_result = subprocess.run(
-            ["ollama", "run", model],
+            ["ollama", "run", model, "--think=false"],
             input=prompt,
             capture_output=True,
             text=True,
@@ -126,29 +134,7 @@ def parse_user_intent(
     model: str = "frob/qwen3.5-instruct:4b",
     max_retries: int = 2,
 ) -> Dict[str, Any]:
-    prompt = f"""
-You are a fitness assistant.
-Your task is to extract user's workout intent and output JSON only.
-
-Schema:
-{{
- "session_goal": "fat_loss | strength | general_fitness",
- "target_muscles": ["legs","core","chest","back","arms","full_body"],
- "duration_minutes": int,
- "intensity_preference": "low | moderate | high",
- "experience_level": "beginner | intermediate | advanced | unknown",
- "avoid_body_parts": []
-}}
-
-Rules:
-1. duration default 30 if not mentioned
-2. target_muscles default ["full_body"]
-3. avoid_body_parts default []
-4. The user request may come from Chinese speech recognition and may contain homophone or near-sound errors. Infer session_goal, target_muscles, and duration_minutes from the fitness context.
-
-User request:
-{user_text}
-"""
+    prompt = build_intent_prompt(user_text)
 
     last_error: Exception | None = None
     for attempt in range(max_retries + 1):
@@ -172,3 +158,31 @@ User request:
         "Failed to parse user intent via LLM after retries. "
         f"Model: {model}. Last error: {detail}"
     )
+
+
+def build_intent_prompt(user_text: str) -> str:
+    return f"""
+You are a fitness assistant.
+Your task is to extract user's workout intent and output JSON only.
+
+Schema:
+{{
+ "session_goal": "fat_loss | strength | general_fitness",
+ "target_muscles": ["legs","core","chest","back","arms","full_body"],
+ "duration_minutes": int,
+ "intensity_preference": "low | moderate | high",
+ "experience_level": "beginner | intermediate | advanced | unknown",
+ "avoid_body_parts": []
+}}
+
+Rules:
+1. duration default 30 if not mentioned.
+2. target_muscles means body parts the user positively wants to train.
+3. avoid_body_parts means body parts the user wants to avoid or does not want to train.
+4. If the user only says what they do NOT want, put those parts in avoid_body_parts and keep target_muscles as ["full_body"].
+5. Never put a negated body part into target_muscles. For example, "不要练腿" means avoid_body_parts ["legs"], not target_muscles ["legs"].
+6. The user request may come from Chinese speech recognition and may contain homophone or near-sound errors. Infer intent from the fitness context, but preserve negation words such as 不要, 不想, 不练, 避免.
+
+User request:
+{user_text}
+"""

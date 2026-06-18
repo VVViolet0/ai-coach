@@ -1,110 +1,110 @@
 {
-  "push_up": {
-    "exercise_name": "俯卧撑",
+  "wall_push_up": {
+    "exercise_name": "靠墙俯卧撑",
     "instructions": [
-      "双手撑地，略宽于肩",
-      "身体从头到脚呈一条直线",
-      "屈肘缓慢下沉，感受胸部发力",
-      "推地还原，核心收紧"
-    ]
+      "面向墙站好，双手扶墙。",
+      "屈肘靠近墙，再推回。",
+      "身体保持直线。"
+    ],
+    "default_beat_hz": 0.35
+  },
+  "arm_circles": {
+    "exercise_name": "手臂绕环",
+    "instructions": [
+      "双臂平展。",
+      "摆动双臂画小圈。",
+      "肩膀放松。"
+    ],
+    "default_beat_hz": 0.8
+  },
+  "standing_punches": {
+    "exercise_name": "站姿出拳",
+    "instructions": [
+      "双脚开立与肩同宽。",
+      "双手握拳置于胸前。",
+      "左右交替向前出拳。"
+    ],
+    "default_beat_hz": 1.0
   },
   "bodyweight_squat": {
     "exercise_name": "深蹲",
     "instructions": [
-      "双脚与肩同宽站立",
-      "臀部后坐，核心收紧",
-      "蹲至大腿与地面平行",
-      "脚跟发力站起，膝盖对准脚尖"
-    ]
+      "双脚开立与肩同宽。",
+      "臀部向后坐，慢慢下蹲。",
+      "注意膝盖对准脚尖。"
+    ],
+    "default_beat_hz": 0.4
   },
-  "plank": {
-    "exercise_name": "平板支撑",
+  "standing_knee_raise": {
+    "exercise_name": "站姿提膝",
     "instructions": [
-      "小臂撑地，手肘在肩膀正下方",
-      "肩膀、胯部和脚跟呈一条直线",
-      "收紧核心和臀部",
-      "保持平稳，均匀呼吸"
-    ]
+      "自然站立。",
+      "左右膝盖交替抬高。",
+      "上半身保持稳定，感受腹部发力。"
+    ],
+    "default_beat_hz": 0.8
   },
-  "mountain_climber": {
-    "exercise_name": "登山跑",
+  "calf_raise": {
+    "exercise_name": "提踵",
     "instructions": [
-      "呈直臂俯卧撑姿势",
-      "单腿提膝向胸前靠拢",
-      "双腿交替提膝，保持平稳",
-      "胯部不晃动，核心收紧"
-    ]
+      "双脚开立与肩同宽。",
+      "脚跟慢慢抬起。",
+      "平稳落回，感受小腿发力。"
+    ],
+    "default_beat_hz": 0.6
+  },
+  "standing_knee_to_elbow": {
+    "exercise_name": "提膝转体",
+    "instructions": [
+      "双手轻放头两侧。",
+      "抬膝，同时转动上身，膝盖触碰另一侧手肘。",
+      "左右交替完成。"
+    ],
+    "default_beat_hz": 0.7
+  },
+  "standing_reverse_fly": {
+    "exercise_name": "双臂开合扩背",
+    "instructions": [
+      "双臂抬至在胸前，微曲。",
+      "向两侧打开，感受背部发力。",
+      "收回胸前，肩膀放松。"
+    ],
+    "default_beat_hz": 0.5
+  },
+  "standing_y_raise": {
+    "exercise_name": "双臂斜上举",
+    "instructions": [
+      "自然站立，双臂向前平举。",
+      "向斜上方抬起成Y字形。",
+      "肩膀放松，慢慢回位。"
+    ],
+    "default_beat_hz": 0.5
+  },
+  "standing_back_clap": {
+    "exercise_name": "背部拍手",
+    "instructions": [
+      "自然站立，双臂平举。",
+      "双臂向下摆动，手在背后拍手。",
+      "肩膀放松，感受背部发力。"
+    ],
+    "default_beat_hz": 0.5
+  },
+  "step_jack": {
+    "exercise_name": "开合步",
+    "instructions": [
+      "自然站立，双手下垂。",
+      "一脚向侧面迈步，同时双臂向上打开。",
+      "把脚收回，同时双臂放下。另一侧重复。"
+    ],
+    "default_beat_hz": 0.85
   },
   "jumping_jacks": {
     "exercise_name": "开合跳",
     "instructions": [
-      "站直，双脚并拢，双臂自然下垂",
-      "跳起双脚外开，双手头顶击掌或上举",
-      "落地微屈膝缓冲",
-      "有节奏地跳回并重复"
-    ]
-  },
-  "sit_up": {
-    "exercise_name": "仰卧起坐",
-    "instructions": [
-      "仰卧屈膝，双脚踩实地面",
-      "收紧核心（肚子用力）",
-      "上半身平稳卷起",
-      "缓慢躺回，不要砸向地板"
-    ]
-  },
-  "high_knees": {
-    "exercise_name": "高抬腿",
-    "instructions": [
-      "站直，核心收紧",
-      "单腿尽力向上提膝",
-      "双腿快速交替",
-      "手臂自然摆动，脚步轻盈"
-    ]
-  },
-  "superman_hold": {
-    "exercise_name": "俯卧两头起",
-    "instructions": [
-      "俯卧，双臂向前伸直",
-      "微微抬起手脚和胸部",
-      "脖子放松，视线看地",
-      "收紧背部，稳定保持"
-    ]
-  },
-  "reverse_snow_angel": {
-    "exercise_name": "俯卧手臂开合",
-    "instructions": [
-      "俯卧，双臂贴在身体两侧",
-      "微微抬起上半身",
-      "双臂向头顶方向画弧打开",
-      "缓慢收回，感受上背部发力"
-    ]
-  },
-  "tricep_dips": {
-    "exercise_name": "背后臂屈伸",
-    "instructions": [
-      "双手撑在身后稳固平面上",
-      "臀部移出支撑面边缘",
-      "屈肘缓慢下沉",
-      "手掌发力推起还原"
-    ]
-  },
-  "bird_dog": {
-    "exercise_name": "跪姿对侧伸展",
-    "instructions": [
-      "双手双膝着地，呈四足跪姿",
-      "同时伸出对侧手脚",
-      "保持骨盆不晃动，核心收紧",
-      "缓慢收回，换另一侧"
-    ]
-  },
-  "burpees": {
-    "exercise_name": "波比跳",
-    "instructions": [
-      "站直，双脚与胯同宽",
-      "下蹲双手撑地",
-      "双脚后跳成直臂撑地，再向前跳回蹲姿",
-      "向上跳起，落地微屈膝缓冲"
-    ]
+      "自然站立，双手下垂。",
+      "跳起，打开双脚，同时手臂上挥。",
+      "双脚跳回，同时手臂回落，保持节奏。"
+    ],
+    "default_beat_hz": 1.2
   }
 }

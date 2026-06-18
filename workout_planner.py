@@ -14,6 +14,7 @@ MIN_REST = 10
 MAX_REST = 180
 MIN_SETS = 1
 MAX_SETS = 6
+MIN_LOW_INTENSITY_CANDIDATES = 3
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 def _extract_json_block(text: str) -> str:
     if not text:
@@ -36,18 +37,26 @@ def _chat_with_model(prompt: str, model: str, temperature: float) -> str:
 
     if ollama is not None:
         try:
-            response = ollama.chat(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                options={"temperature": temperature},
-            )
+            try:
+                response = ollama.chat(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    options={"temperature": temperature},
+                    think=False,
+                )
+            except TypeError:
+                response = ollama.chat(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    options={"temperature": temperature},
+                )
             return response["message"]["content"]
         except Exception as exc:
             package_error = exc
 
     try:
         cli_result = subprocess.run(
-            ["ollama", "run", model],
+            ["ollama", "run", model, "--think=false"],
             input=prompt,
             capture_output=True,
             text=True,
@@ -74,23 +83,30 @@ def load_exercise_library(path: str = "libraries/exercise_library.json") -> List
 def filter_exercises(exercises: List[Dict[str, Any]], intent: Dict[str, Any]) -> List[Dict[str, Any]]:
     avoids = set(intent.get("avoid_body_parts", []))
     targets = set(intent.get("target_muscles", ["full_body"]))
-    filtered: List[Dict[str, Any]] = []
+    low_intensity = str(intent.get("intensity_preference", "")).strip().lower() == "low"
+    eligible: List[Dict[str, Any]] = []
+
     for ex in exercises:
         ex_muscles = set(ex.get("target_muscles", []))
         if avoids.intersection(ex_muscles):
             continue
+        if low_intensity and str(ex.get("intensity_level", "")).strip().lower() == "high":
+            continue
+        eligible.append(ex)
 
+    filtered: List[Dict[str, Any]] = []
+    for ex in eligible:
+        ex_muscles = set(ex.get("target_muscles", []))
         if targets.intersection(ex_muscles):
             filtered.append(ex)
+
+    if low_intensity and len(filtered) < MIN_LOW_INTENSITY_CANDIDATES and eligible:
+        return eligible
 
     if filtered:
         return filtered
 
-    for ex in exercises:
-        if not avoids.intersection(set(ex.get("target_muscles", []))):
-            filtered.append(ex)
-
-    return filtered
+    return eligible
 
 
 def estimate_structure(intent: Dict[str, Any]) -> str:
@@ -121,19 +137,35 @@ Create a STRENGTH workout.
 """
 
     rounds = 2
-    avg_exercise_time = 150
-    max_exercises = max(1, target_seconds // (rounds * avg_exercise_time))
+    avg_exercise_time = 120
+    max_exercises = max(3, min(5, target_seconds // avg_exercise_time))
     return f"""
 Create a GENERAL FITNESS workout.
-- choose up to {max_exercises} exercises
-- each exercise has 3 to 4 sets
-- rest 30 to 60 seconds
-- repeat for 2 rounds and 30 seconds rest_between_rounds
+- choose 3 to {max_exercises} different exercises when the library allows
+- each exercise has 2 to 3 sets
+- rest 20 to 45 seconds
+- use 1 round for short workouts under 12 minutes, otherwise repeat for 2 rounds
 """
+
+
+def build_planner_exercise_payload(filtered_exercise_library: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    planner_payload: List[Dict[str, Any]] = []
+    for exercise in filtered_exercise_library:
+        name = str(exercise.get("name", "")).strip()
+        if not name:
+            continue
+        planner_payload.append(
+            {
+                "name": name,
+                "avg_set_time": int(exercise.get("avg_set_time", 30)),
+            }
+        )
+    return planner_payload
 
 
 def build_prompt(intent: Dict[str, Any], filtered_exercise_library: List[Dict[str, Any]]) -> str:
     goal_policy = estimate_structure(intent)
+    planner_exercise_library = build_planner_exercise_payload(filtered_exercise_library)
     return f"""
 You are an AI fitness coach.
 Generate a safe and effective workout plan in JSON only.
@@ -142,11 +174,12 @@ User training intent:
 {json.dumps(intent, ensure_ascii=False, indent=2)}
 
 Exercise library:
-{json.dumps(filtered_exercise_library, ensure_ascii=False, indent=2)}
+{json.dumps(planner_exercise_library, ensure_ascii=False, indent=2)}
 
 {goal_policy}
 Adjust rounds/sets/rest according to intensity_preference.
-Only use exercises in the library.
+The provided library has already been filtered by body-part and intensity rules.
+Only use exercises in the provided library.
 
 Output schema:
 {{

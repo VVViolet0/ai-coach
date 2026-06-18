@@ -1,9 +1,19 @@
 import json
-from intent_modeling import parse_user_intent
+from intent_modeling import build_intent_prompt, parse_user_intent
 
 
 INPUT_FILE = "data/intent_test_inputs.txt"
 OUTPUT_FILE = "data/intent_test_outputs.json"
+
+
+def test_intent_prompt_distinguishes_target_and_avoid_body_parts():
+    prompt = build_intent_prompt("我今天不要练腿")
+
+    assert "positively wants to train" in prompt
+    assert "does not want to train" in prompt
+    assert "keep target_muscles as [\"full_body\"]" in prompt
+    assert "Never put a negated body part into target_muscles" in prompt
+    assert "不要练腿" in prompt
 
 
 def run_intent_test():

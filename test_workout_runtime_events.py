@@ -60,7 +60,7 @@ def tiny_plan():
         "rest_between_rounds": 0,
         "exercises": [
             {
-                "exercise": "push_up",
+                "exercise": "wall_push_up",
                 "avg_set_time": 1,
                 "total_sets": 1,
                 "rest_seconds": 5,
@@ -110,9 +110,40 @@ def test_runtime_events_are_emitted_when_io_supports_send_event():
     assert "set_end" in event_types
     assert "session_end" in event_types
 
+    active_tick = next(
+        payload
+        for event_type, payload in io.events
+        if event_type == "phase_tick" and payload["phase"] == "active_set"
+    )
+    assert active_tick["default_beat_hz"] == 0.35
+    assert active_tick["beat_multiplier"] == 1.0
+    assert active_tick["effective_beat_hz"] == 0.35
+
 
 def test_runtime_events_are_optional_for_plain_io():
     run_adaptive_workout(tiny_plan(), io=PlainIO(), clock=FakeClock())
+
+
+def test_rest_after_exercise_runs_as_a_timed_phase():
+    io = EventIO()
+    plan = tiny_plan()
+    plan["exercises"][0]["rest_after_exercise_seconds"] = 2
+
+    run_adaptive_workout(plan, io=io, clock=FakeClock())
+
+    rest_events = [
+        payload
+        for event_type, payload in io.events
+        if event_type == "rest_start" and payload["rest_type"] == "after_exercise"
+    ]
+    assert rest_events == [
+        {
+            "rest_type": "after_exercise",
+            "seconds": 2,
+            "exercise_index": 0,
+            "exercise_name": "wall_push_up",
+        }
+    ]
 
 
 def test_nonblocking_feedback_does_not_pause_phase_ticks():
@@ -198,9 +229,15 @@ def test_nonblocking_feedback_is_used_during_between_sets_rest():
         for event_type, payload in io.events
         if event_type == "phase_tick" and payload["phase"] == "between_sets_rest"
     ]
+    rest_beat_values = [
+        payload["effective_beat_hz"]
+        for event_type, payload in io.events
+        if event_type == "phase_tick" and payload["phase"] == "between_sets_rest"
+    ]
     event_types = [event_type for event_type, _payload in io.events]
 
     assert rest_ticks == [3, 2, 1]
+    assert rest_beat_values == [0.0, 0.0, 0.0]
     assert "feedback_processing_start" in event_types
     assert "feedback_processing_end" in event_types
 
@@ -269,9 +306,9 @@ def test_preference_dislike_skips_only_current_exercise_without_global_rest_chan
         "rounds": 1,
         "rest_between_rounds": 0,
         "exercises": [
-            {"exercise": "push_up", "avg_set_time": 1, "total_sets": 3, "rest_seconds": 11},
+            {"exercise": "wall_push_up", "avg_set_time": 1, "total_sets": 3, "rest_seconds": 11},
             {"exercise": "bodyweight_squat", "avg_set_time": 1, "total_sets": 3, "rest_seconds": 11},
-            {"exercise": "push_up", "avg_set_time": 1, "total_sets": 3, "rest_seconds": 11},
+            {"exercise": "wall_push_up", "avg_set_time": 1, "total_sets": 3, "rest_seconds": 11},
         ],
     }
     io = SingleInputIO()
@@ -324,7 +361,7 @@ def test_preference_like_shorter_rest_reduces_rest_instead_of_medium_fatigue_rec
         "rounds": 1,
         "rest_between_rounds": 0,
         "exercises": [
-            {"exercise": "push_up", "avg_set_time": 1, "total_sets": 2, "rest_seconds": 11},
+            {"exercise": "wall_push_up", "avg_set_time": 1, "total_sets": 2, "rest_seconds": 11},
             {"exercise": "bodyweight_squat", "avg_set_time": 1, "total_sets": 2, "rest_seconds": 11},
         ],
     }
